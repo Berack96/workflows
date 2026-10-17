@@ -1,0 +1,24 @@
+# By hand: release `vX.Y.Z` of a staging tag of this repository.
+name: Production
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Staging tag to release (empty for the latest)
+        required: false
+
+permissions: {}
+
+jobs:
+  release:
+    name: Release
+    permissions:
+      contents: write
+      pull-requests: read
+      actions: read
+    uses: ./.github/workflows/release.yml
+    with:
+      mode: production
+      tag: ${{ inputs.tag }}
+      staging-workflow: ci-staging.yml

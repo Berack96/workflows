@@ -1,0 +1,33 @@
+# Security checks of this repository: on every PR and every Monday on main, for the CVEs found after the merge.
+name: Security
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  schedule:
+    - cron: "0 6 * * 1"
+
+permissions: {}
+
+# A new commit on the PR cancels the previous run.
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  security:
+    name: Security
+    if: ${{ !github.event.pull_request.draft }}
+    permissions:
+      contents: read
+    uses: ./.github/workflows/security.yml
+
+  issue:
+    name: Issue
+    needs: security
+    if: failure() && github.event_name == 'schedule'
+    permissions:
+      issues: write
+    uses: ./.github/workflows/failure-issue.yml
+    with:
+      title: Weekly security checks failed
