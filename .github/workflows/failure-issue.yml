@@ -1,0 +1,33 @@
+# Opens an issue (or comments the open one) for a failed run: a failed scheduled run notifies only who last edited the
+# cron, the issue is seen by everyone.
+name: Failure issue
+
+on:
+  workflow_call:
+    inputs:
+      title:
+        description: Title of the issue
+        type: string
+        required: true
+
+permissions: {}
+
+jobs:
+  issue:
+    name: Issue
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          TITLE: ${{ inputs.title }}
+        run: |
+          issue=$(gh issue list --state open --search "\"$TITLE\" in:title" --json number --jq '.[0].number // empty')
+          if [ -n "$issue" ]; then
+            gh issue comment "$issue" --body "Failed again: $RUN_URL"
+          else
+            gh issue create --title "$TITLE" --body "The workflow \`$GITHUB_WORKFLOW\` failed: $RUN_URL"
+          fi
