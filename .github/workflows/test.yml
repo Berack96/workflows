@@ -1,0 +1,65 @@
+# Lint and tests: the commands come from the caller, the job only prepares the tools.
+name: Test
+
+on:
+  workflow_call:
+    inputs:
+      run:
+        description: Commands that run lint and tests (bash, one per line)
+        type: string
+        required: true
+      env:
+        description: Environment variables for the whole job, one `NAME=value` per line
+        type: string
+        default: ""
+      mise:
+        description: Install the tools of the repository's mise config
+        type: boolean
+        default: false
+      rust-cache:
+        description: Cache the Rust builds (Swatinem/rust-cache)
+        type: boolean
+        default: false
+      artifact:
+        description: Name of an artifact to upload after the tests, for the next jobs (empty for none)
+        type: string
+        default: ""
+      artifact-path:
+        description: Files of the artifact
+        type: string
+        default: ""
+
+permissions: {}
+
+jobs:
+  test:
+    name: Checks
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Before mise: variables like `MISE_DISABLE_TOOLS` must already be there.
+      - if: inputs.env
+        env:
+          VARS: ${{ inputs.env }}
+        run: printf '%s\n' "$VARS" >> "$GITHUB_ENV"
+      # mise pinned: version and sha256 of the linux-x64 binary (not of the archive).
+      - if: inputs.mise
+        uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
+        with:
+          version: 2026.10.9
+          sha256: 6ab6646b52b83f6bbd51c9d0d3ae54264ffa90efd1ac6d7c0ec5a86bbc6a0030
+      - if: inputs.rust-cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - env:
+          RUN: ${{ inputs.run }}
+        run: bash -eo pipefail -c "$RUN"
+      - if: inputs.artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ inputs.artifact }}
+          path: ${{ inputs.artifact-path }}
+          retention-days: 1
