@@ -1,0 +1,379 @@
+# Tags and GitHub releases.
+# `staging`, on a push to the default branch: a staging tag on the pushed commit and, if on, a pre-release with the
+# files of an artifact. `production`, by hand: the release of a staging tag without rebuilding, with the files of its
+# pre-release; without staging, the release of the head of the default branch.
+name: Release
+
+on:
+  workflow_call:
+    inputs:
+      mode:
+        description: "`staging` or `production`"
+        type: string
+        required: true
+      staging:
+        description: Use staging tags; off, `production` releases the head of the default branch
+        type: boolean
+        default: true
+      staging-prefix:
+        description: Name in the staging tags
+        type: string
+        default: staging
+      staging-scheme:
+        description: "Staging tags: `calver` (`<prefix>-YYYY.MM-build.NNN`) or `semver` (`<next release>-<prefix>.N`)"
+        type: string
+        default: calver
+      release-scheme:
+        description: "Release tags: `semver` (`vX.Y.Z`, from the commit titles) or `calver` (`vYYYY.MM.N`)"
+        type: string
+        default: semver
+      prerelease:
+        description: Keep a GitHub pre-release on the latest staging tag after the latest release
+        type: boolean
+        default: true
+      artifact:
+        description: "`staging`: artifact whose files are attached to the pre-release, and then to the release"
+        type: string
+        default: ""
+      assets-notes:
+        description: Text added to the release notes when there are attached files
+        type: string
+        default: ""
+      tag:
+        description: "`production`: staging tag to release (empty for the latest)"
+        type: string
+        default: ""
+      staging-workflow:
+        description: "`production`: workflow file that must have passed on the staging commit (empty to skip the check)"
+        type: string
+        default: staging.yml
+      cliff-config:
+        description: git-cliff config of the release notes (empty for the bundled one)
+        type: string
+        default: ""
+
+permissions: {}
+
+jobs:
+  release:
+    name: Release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: read
+      actions: read
+    # Staging runs queue up, a pending one gives way to the next push; production is in another group and does not
+    # stop them.
+    concurrency:
+      group: release-${{ inputs.mode }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      GH_TOKEN: ${{ github.token }}
+      # For git-cliff: authors and pull requests in the release notes.
+      GITHUB_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      BRANCH: ${{ github.event.repository.default_branch }}
+      STAGING_PREFIX: ${{ inputs.staging-prefix }}
+      STAGING_SCHEME: ${{ inputs.staging-scheme }}
+      RELEASE_SCHEME: ${{ inputs.release-scheme }}
+      ASSETS_NOTES: ${{ inputs.assets-notes }}
+      CLIFF_CONFIG: ${{ inputs.cliff-config }}
+    steps:
+      # Private repositories have no environment reviewers: only an admin of the repository releases.
+      - if: inputs.mode == 'production'
+        env:
+          ACTOR: ${{ github.triggering_actor }}
+        run: |
+          permission=$(gh api "repos/$GH_REPO/collaborators/$ACTOR/permission" --jq .permission)
+          [ "$permission" = admin ] || { echo "::error::$ACTOR is not an admin of the repository"; exit 1; }
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # `production` works on the default branch, whatever branch it is started from.
+          ref: ${{ inputs.mode == 'production' && github.event.repository.default_branch || '' }}
+          fetch-depth: 0
+          persist-credentials: false
+      # git-cliff from the official release, with fixed version and sha256 (the `digest` of the asset on GitHub), its
+      # bundled config and the helpers of the next steps.
+      - name: Setup
+        env:
+          MODE: ${{ inputs.mode }}
+          STAGING: ${{ inputs.staging }}
+          VERSION: 2.14.2
+          SHA256: 24f397c733add5390fdceee3a2088588ab0d5f944ce00d34cb7029b888cf2db4
+        run: |
+          [[ $MODE =~ ^(staging|production)$ ]] || { echo "::error::unknown mode $MODE"; exit 1; }
+          [[ $MODE == production || $STAGING == true ]] || { echo "::error::mode staging with staging off"; exit 1; }
+          [[ $STAGING_SCHEME =~ ^(calver|semver)$ ]] || { echo "::error::unknown staging scheme $STAGING_SCHEME"; exit 1; }
+          [[ $RELEASE_SCHEME =~ ^(semver|calver)$ ]] || { echo "::error::unknown release scheme $RELEASE_SCHEME"; exit 1; }
+
+          curl -fsSL -o "$RUNNER_TEMP/git-cliff.tar.gz" \
+            "https://github.com/orhun/git-cliff/releases/download/v$VERSION/git-cliff-$VERSION-x86_64-unknown-linux-gnu.tar.gz"
+          echo "$SHA256  $RUNNER_TEMP/git-cliff.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/git-cliff.tar.gz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/git-cliff-$VERSION" >> "$GITHUB_PATH"
+
+          cat > "$RUNNER_TEMP/cliff.toml" << 'EOF'
+          [changelog]
+          header = ""
+          body = """
+          {%- for group, commits in commits | group_by(attribute="group") %}
+          {%- set name = group | striptags | trim %}
+          {% if name == "Other" %}
+          <details><summary>Other ({{ commits | length }})</summary>
+          {% else %}
+          ### {{ name }}
+          {%- endif %}
+          {% for commit in commits %}
+          - {% if commit.scope %}**{{ commit.scope }}**: {% endif %}{{ commit.message | split(pat="\n") | first | upper_first }}
+          {%- endfor %}
+          {% if name == "Other" %}
+          </details>
+          {% endif %}
+          {%- endfor %}
+          {%- if previous.version %}
+
+          Full changelog: [{{ previous.version }}...{{ version }}](https://github.com/{{ remote.github.owner }}/{{ remote.github.repo }}/compare/{{ previous.version }}...{{ version }})
+          {%- endif %}
+          {%- if github.contributors | length > 0 %}
+
+          <sub>Authors: {% for contributor in github.contributors %}@{{ contributor.username }}{% if not loop.last %}, {% endif %}{% endfor %}</sub>
+          {%- endif %}
+          """
+          trim = true
+
+          [git]
+          conventional_commits = true
+          filter_unconventional = false
+          # The notes always start from the latest release: staging tags do not close a section.
+          tag_pattern = "^v[0-9]+\\.[0-9]+\\.[0-9]+$"
+          commit_parsers = [
+            { message = '^feat(\(.*\))?!?:', group = "<!-- 0 -->Features" },
+            { message = '^fix(\(.*\))?!?:', group = "<!-- 1 -->Fixes" },
+            # Titles that are not conventional end up in "Other" too.
+            { message = ".*", group = "<!-- 2 -->Other" },
+          ]
+          EOF
+
+          cat > "$RUNNER_TEMP/release.sh" << 'EOF'
+          # A failure inside `$(...)` stops the step, as everywhere else.
+          shopt -s inherit_errexit
+          if [ "$STAGING_SCHEME" = calver ]; then
+            staging_glob="$STAGING_PREFIX-*"
+          else
+            staging_glob="v*-$STAGING_PREFIX.*"
+          fi
+          cliff_config=${CLIFF_CONFIG:-$RUNNER_TEMP/cliff.toml}
+
+          # Latest release reachable from commit $1, empty if there is none.
+          last_release() {
+            git describe --tags --abbrev=0 --match 'v*' --exclude 'v*-*' "$1" 2> /dev/null || true
+          }
+
+          # The commits after release $1 (all, if empty) up to $2.
+          range() {
+            echo "${1:+$1..}$2"
+          }
+
+          # Version with which commit $1 would be released. semver: the latest release with the strongest bump in the
+          # titles of the commits after it (`!` -> X, `feat` -> Y, other -> Z). calver: year and month of the commit in UTC.
+          next_version() {
+            if [ "$RELEASE_SCHEME" = calver ]; then
+              local month last n=0
+              month=$(TZ=UTC git show -s --date=format-local:%Y.%m --format=%cd "$1")
+              last=$(git tag --list "v$month.*" | grep -v -- - | sort -V | tail -n 1) || true
+              [ -z "$last" ] || n=$((10#${last##*.} + 1))
+              echo "v$month.$n"
+              return
+            fi
+            local release x y z subjects
+            release=$(last_release "$1")
+            IFS=. read -r x y z <<< "${release:-v0.0.0}"
+            x=${x#v}
+            subjects=$(git log --format=%s "$(range "$release" "$1")")
+            if grep -qE '^[a-z]+(\([^)]*\))?!:' <<< "$subjects"; then
+              echo "v$((x + 1)).0.0"
+            elif grep -qE '^feat(\([^)]*\))?:' <<< "$subjects"; then
+              echo "v$x.$((y + 1)).0"
+            else
+              echo "v$x.$y.$((z + 1))"
+            fi
+          }
+
+          # Release notes of the commits after release $1 up to $2, for tag $3, with $4 attached files.
+          notes() {
+            local text
+            text=$(git-cliff --config "$cliff_config" --github-repo "$GH_REPO" "$(range "$1" "$2")" --tag "$3")
+            if [ "$4" -gt 0 ] && [ -n "$ASSETS_NOTES" ]; then
+              text+=$'\n\n'"$ASSETS_NOTES"
+            fi
+            echo "$text"
+          }
+          EOF
+
+      # A re-run on a commit already overtaken by the default branch creates no tag: staging has a newer commit.
+      - id: head
+        if: inputs.mode == 'staging'
+        run: |
+          head=$(gh api "repos/$GH_REPO/git/ref/heads/$BRANCH" --jq .object.sha)
+          if [ "$head" != "$GITHUB_SHA" ]; then
+            echo "$BRANCH has moved on ($head): no staging tag for $GITHUB_SHA"
+            echo "outdated=true" >> "$GITHUB_OUTPUT"
+          fi
+      # A re-run finds the tag already created, which must be on this commit; `git tag` is for the pre-release.
+      - if: inputs.mode == 'staging' && steps.head.outputs.outdated != 'true'
+        run: |
+          source "$RUNNER_TEMP/release.sh"
+          tag=$(git tag --points-at "$GITHUB_SHA" --list "$staging_glob" | head -n 1)
+          if [ -z "$tag" ]; then
+            if [ "$STAGING_SCHEME" = calver ]; then
+              base="$STAGING_PREFIX-$(TZ=UTC git show -s --date=format-local:%Y.%m --format=%cd "$GITHUB_SHA")-build."
+            else
+              base="$(next_version "$GITHUB_SHA")-$STAGING_PREFIX."
+            fi
+            last=$(git tag --list "$base*" --sort=-v:refname | head -n 1)
+            build=1
+            if [ -n "$last" ]; then
+              build=$((10#${last##*.} + 1))
+            fi
+            # Semver forbids leading zeros in the pre-release numbers.
+            if [ "$STAGING_SCHEME" = calver ]; then
+              tag=$(printf '%s%03d' "$base" "$build")
+            else
+              tag="$base$build"
+            fi
+          fi
+          gh api "repos/$GH_REPO/git/refs" -f ref="refs/tags/$tag" -f sha="$GITHUB_SHA" ||
+            [ "$(gh api "repos/$GH_REPO/git/ref/tags/$tag" --jq .object.sha)" = "$GITHUB_SHA" ]
+          git tag -f "$tag"
+      - if: inputs.mode == 'staging' && steps.head.outputs.outdated != 'true' && inputs.prerelease && inputs.artifact != ''
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ inputs.artifact }}
+          path: dist
+
+      # The commit to release: a staging tag on the default branch (without staging, its head) after the latest
+      # release, with a run of the staging workflow passed up to this job, since anyone with write access can push a
+      # staging tag. A re-run finds its release already on the commit, and keeps its version.
+      - id: target
+        if: inputs.mode == 'production'
+        env:
+          STAGING: ${{ inputs.staging }}
+          INPUT_TAG: ${{ inputs.tag }}
+          STAGING_WORKFLOW: ${{ inputs.staging-workflow }}
+        run: |
+          source "$RUNNER_TEMP/release.sh"
+          tag=""
+          sha=$(git rev-parse HEAD)
+          if [ "$STAGING" = true ]; then
+            tag="${INPUT_TAG:-$(git describe --tags --abbrev=0 --match "$staging_glob" HEAD)}"
+            # shellcheck disable=SC2053 # staging_glob is a pattern.
+            [[ $tag == $staging_glob ]] || { echo "::error::$tag is not a staging tag"; exit 1; }
+            sha=$(git rev-parse --verify "refs/tags/$tag^{commit}")
+            git merge-base --is-ancestor "$sha" HEAD || { echo "::error::$tag is not on $BRANCH"; exit 1; }
+          fi
+
+          version=$(git tag --points-at "$sha" --list 'v*' | grep -v -- - | head -n 1) || true
+          if [ -z "$version" ]; then
+            release=$(last_release HEAD)
+            if [ -n "$release" ] && ! git merge-base --is-ancestor "$release" "$sha^"; then
+              echo "::error::$sha is not after the latest release $release"
+              exit 1
+            fi
+            version=$(next_version "$sha")
+          fi
+
+          if [ "$STAGING" = true ] && [ -n "$STAGING_WORKFLOW" ]; then
+            passed=false
+            for run in $(gh api "repos/$GH_REPO/actions/workflows/$STAGING_WORKFLOW/runs?head_sha=$sha&status=success" \
+              --jq '.workflow_runs[].id'); do
+              [ "$(gh api "repos/$GH_REPO/actions/runs/$run/jobs" \
+                --jq '[.jobs[] | select(.name == "Release" or (.name | endswith(" / Release")))] | any(.conclusion == "success")')" = true ] &&
+                passed=true
+            done
+            $passed || { echo "::error::$sha: no run of $STAGING_WORKFLOW passed up to its release"; exit 1; }
+          fi
+          {
+            echo "tag=$tag"
+            echo "sha=$sha"
+            echo "version=$version"
+          } >> "$GITHUB_OUTPUT"
+      # The files of the pre-release of the tag, if it is still there: only the latest staging tag has one.
+      - if: inputs.mode == 'production' && inputs.staging && inputs.prerelease
+        env:
+          TAG: ${{ steps.target.outputs.tag }}
+        run: |
+          mkdir -p dist
+          gh release download "$TAG" --dir dist || echo "::warning::no pre-release with files for $TAG"
+      # A re-run finds tag and release already created: the tag must be on this commit and the release created by this
+      # workflow, not by someone who prepared it before with their own files.
+      - if: inputs.mode == 'production'
+        env:
+          SHA: ${{ steps.target.outputs.sha }}
+          VERSION: ${{ steps.target.outputs.version }}
+        run: |
+          source "$RUNNER_TEMP/release.sh"
+          gh api "repos/$GH_REPO/git/refs" -f ref="refs/tags/$VERSION" -f sha="$SHA" ||
+            [ "$(gh api "repos/$GH_REPO/git/ref/tags/$VERSION" --jq .object.sha)" = "$SHA" ]
+          git tag -f "$VERSION" "$SHA"
+          shopt -s nullglob
+          files=(dist/*)
+          notes=$(notes "$(last_release "$SHA^")" "$SHA" "$VERSION" "${#files[@]}")
+          if author=$(gh release view "$VERSION" --json author --jq .author.login 2> /dev/null); then
+            [ "$author" = "github-actions[bot]" ] ||
+              { echo "::error::the release $VERSION was created by $author, not by this workflow"; exit 1; }
+          else
+            gh release create "$VERSION" --verify-tag --title "$VERSION" --notes "$notes" "${files[@]}"
+          fi
+
+      # A single pre-release: on the latest staging tag after the latest release, with the notes since that release;
+      # none if there is no such tag. Holds against the other mode running in parallel: reads tags and branch from the
+      # remote, updates the pre-release if it is already there and deletes the others only at the end.
+      - name: Pre-release
+        if: inputs.staging && inputs.prerelease && steps.head.outputs.outdated != 'true'
+        env:
+          # In `production`, `dist` has the files of the release.
+          ATTACH: ${{ inputs.mode == 'staging' }}
+        run: |
+          source "$RUNNER_TEMP/release.sh"
+          # Tags and commits created by the other mode after the checkout (which does not keep the credentials).
+          auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" \
+            fetch --quiet --force --tags origin "$BRANCH"
+          release=$(last_release "origin/$BRANCH")
+
+          target=""
+          tag=$(git describe --tags --abbrev=0 --match "$staging_glob" "origin/$BRANCH" 2> /dev/null) || tag=""
+          if [ -n "$tag" ]; then
+            sha=$(git rev-parse "$tag^{commit}")
+            if [ "$(git rev-list --count "$(range "$release" "$sha")")" -gt 0 ]; then
+              target=$tag
+            fi
+          fi
+
+          if [ -n "$target" ]; then
+            shopt -s nullglob
+            files=()
+            # The files are of the pushed commit: attached only if it is the one of the pre-release.
+            if [ "$ATTACH" = true ] && [ "$GITHUB_SHA" = "$sha" ]; then
+              files=(dist/*)
+            fi
+            attached=$(gh release view "$target" --json assets --jq '.assets | length' 2> /dev/null || echo 0)
+            notes=$(notes "$release" "$sha" "$target" $((${#files[@]} + attached)))
+            # If it is already there, or the other mode has just created it, it is updated.
+            if gh release view "$target" > /dev/null 2>&1 ||
+              ! gh release create "$target" --prerelease --verify-tag --title "$target" --notes "$notes" "${files[@]}"; then
+              gh release edit "$target" --prerelease --title "$target" --notes "$notes"
+              if [ "${#files[@]}" -gt 0 ]; then
+                gh release upload "$target" "${files[@]}" --clobber
+              fi
+            fi
+          fi
+
+          gh release list --json tagName,isPrerelease --jq '.[] | select(.isPrerelease) | .tagName' |
+            while read -r old; do
+              if [ "$old" != "$target" ]; then
+                gh release delete "$old" --yes
+              fi
+            done
