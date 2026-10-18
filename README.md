@@ -72,42 +72,61 @@ only who last edited the cron. Permissions: `issues: write`.
 
 ### `release.yml`
 
-Tags and GitHub releases, in two modes:
+Tags and GitHub releases of one environment: staging, production, beta, a mod loader, a project of a monorepo… An
+environment is the template of its tags, and each call creates tags of one environment:
 
-- `staging`, on a push to the default branch: a staging tag on the pushed commit and, if `prerelease` is on, a
-  pre-release with the files of an artifact. A run on a commit the branch has already moved past does nothing.
-- `production`, by hand: the release of a staging tag, without rebuilding, with the files of its pre-release. Only an
-  admin of the repository can run it, and the staging tag must be on the default branch, after the latest release, with
-  a passed run of the staging workflow. With `staging: false` it releases the head of the default branch instead.
+- without `from` it tags the commit of the run: the pushed one, or the head of the branch when started by hand. A run
+  on a commit the branch has already moved past does nothing.
+- with `from` it promotes a tag of another environment: same commit, no rebuild, with the files of its GitHub release.
+  The tag must be on the branch and after the latest tag of this environment; with `from-workflow`, that workflow must
+  have passed on its commit, since anyone with write access can push a tag.
 
-There is always at most one pre-release: the one of the latest staging tag after the latest release. Any other
-pre-release of the repository is deleted. The release notes come from the commit titles since the latest release
-(git-cliff, conventional commits). Re-running a failed run is safe: tags and releases already created are checked and
-kept.
+Started by hand, only an admin of the repository can run it. The branch is the one of the run. Re-running a failed run
+is safe: tags and releases already created are checked and kept.
 
-Tags:
+#### Tag templates
 
-| | `calver` | `semver` |
-| --- | --- | --- |
-| `staging-scheme` | `<prefix>-YYYY.MM-build.NNN` (default) | `<next release>-<prefix>.N` |
-| `release-scheme` | `vYYYY.MM.N` | `vX.Y.Z` (default): `!` bumps X, `feat` bumps Y, anything else Z |
+| Placeholder | Value |
+| --- | --- |
+| `{X}`, `{Y}`, `{Z}` | Next version after the latest release (`release-tag`): `!` in a commit title bumps X, `feat` Y, anything else Z; `v0.0.0` without releases |
+| `{YYYY}`, `{YY}`, `{MM}` | Year, short year and month of the commit, in UTC |
+| `{N}`, `{NN}`, `{NNN}`… | Counter from 1 among the tags with the same other values, zero-padded to the number of `N` |
 
-Dates are the commit dates in UTC. With no release yet, semver starts from `v0.0.0`.
+| Template | Tags |
+| --- | --- |
+| `v{X}.{Y}.{Z}` (default) | `v1.6.3` |
+| `staging-{YYYY}.{MM}-build.{NNN}` | `staging-2026.05-build.007` |
+| `v{X}.{Y}.{Z}-beta.{N}` | `v1.7.0-beta.2` |
+| `v{YY}.{MM}.{N}` | `v26.05.3` |
+| `web@{X}.{Y}.{Z}` | `web@1.6.3` |
+| `api@{YY}.{MM}-build.{N}` | `api@26.05-build.50` |
+| `v{X}.{Y}.{Z}+forge-1.21` | `v1.6.3+forge-1.21` |
+
+A template must give a different tag to each commit: with only dates, add a `{N}`.
+
+#### GitHub releases
+
+`github-release: release` creates a release for each tag, `none` only tags. With `prerelease` there is at most one
+pre-release per environment: the one of its latest tag after the latest release (`release-tag`), updated by its runs
+and by the ones promoting from it; its older pre-releases are deleted. In a chain like alpha → beta → release, the
+alpha pre-release left behind by a release goes away at the next alpha run.
+
+The release notes list the commit titles since the latest release (git-cliff, conventional commits), only of `path`
+in a monorepo.
 
 Permissions: `contents: write`, `pull-requests: read`, `actions: read`.
 
 | Input | Default | |
 | --- | --- | --- |
-| `mode` | required | `staging` or `production` |
-| `staging` | `true` | Use staging tags; off, `production` releases the head of the default branch |
-| `staging-prefix` | `staging` | Name in the staging tags |
-| `staging-scheme` | `calver` | `calver` or `semver` |
-| `release-scheme` | `semver` | `semver` or `calver` |
-| `prerelease` | `true` | Keep a pre-release on the latest staging tag; off, staging creates only tags |
-| `artifact` | | `staging`: artifact whose files are attached to the pre-release, and then to the release |
+| `tag` | `v{X}.{Y}.{Z}` | Template of the tags this run creates |
+| `release-tag` | | Template of the release tags, base of `{X}.{Y}.{Z}` and of the notes; empty when this run creates them (only with `github-release: release`) |
+| `from` | | Template of the tags to promote; empty to tag the commit of the run |
+| `from-tag` | | Tag to promote (empty for the latest of `from` on the branch) |
+| `from-workflow` | | Workflow file that must have passed on the commit of the tag to promote |
+| `github-release` | `release` | `release`, `prerelease` or `none` |
+| `path` | | Directory of the project in a monorepo: only its commits count for `{X}.{Y}.{Z}` and the notes |
+| `artifact` | | Artifact whose files are attached to the GitHub release (without `from`) |
 | `assets-notes` | | Text added to the release notes when there are attached files |
-| `tag` | | `production`: staging tag to release (empty for the latest) |
-| `staging-workflow` | `staging.yml` | `production`: workflow file that must have passed on the staging commit (empty to skip) |
 | `cliff-config` | | git-cliff config of the release notes (empty for the bundled one) |
 
 ## Example
@@ -234,8 +253,9 @@ jobs:
       actions: read
     uses: Berack96/workflows/.github/workflows/release.yml@<sha> # vX.Y.Z
     with:
-      mode: staging
-      staging-prefix: test
+      tag: test-{YY}.{MM}-build.{NNN}
+      release-tag: v{X}.{Y}.{Z}
+      github-release: prerelease
       artifact: dist
       assets-notes: Built for linux x86_64.
 ```
@@ -263,13 +283,46 @@ jobs:
       actions: read
     uses: Berack96/workflows/.github/workflows/release.yml@<sha> # vX.Y.Z
     with:
-      mode: production
-      staging-prefix: test
-      tag: ${{ inputs.tag }}
+      from: test-{YY}.{MM}-build.{NNN}
+      from-tag: ${{ inputs.tag }}
+      from-workflow: staging.yml
 ```
 
-The inputs about tags (`staging`, `staging-prefix`, `staging-scheme`, `release-scheme`, `prerelease`) must be the same
-in both modes.
+A Minecraft mod built for several loaders from the same commit, one release per loader on each push:
+
+```yaml
+jobs:
+  release:
+    name: Release
+    needs: build
+    strategy:
+      matrix:
+        loader: [forge-1.21, fabric-26.3]
+    permissions:
+      contents: write
+      pull-requests: read
+      actions: read
+    uses: Berack96/workflows/.github/workflows/release.yml@<sha> # vX.Y.Z
+    with:
+      tag: v{X}.{Y}.{Z}+${{ matrix.loader }}
+      artifact: ${{ matrix.loader }}
+```
+
+A monorepo, one workflow per project with `on.push.paths` on its directory:
+
+```yaml
+jobs:
+  release:
+    name: Release
+    permissions:
+      contents: write
+      pull-requests: read
+      actions: read
+    uses: Berack96/workflows/.github/workflows/release.yml@<sha> # vX.Y.Z
+    with:
+      tag: web@{X}.{Y}.{Z}
+      path: projects/web
+```
 
 ## This repository
 
