@@ -18,4 +18,6 @@ jobs:
       actions: read
     uses: ./.github/workflows/release.yml
     with:
-      mode: staging
+      tag: staging-{YYYY}.{MM}-build.{NNN}
+      release-tag: v{X}.{Y}.{Z}
+      github-release: prerelease
