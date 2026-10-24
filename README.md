@@ -223,9 +223,9 @@ there. The log of the run lists all the paths.
 `github-release: release` creates a release for each tag, `none` only tags. With `prerelease` there is at most one
 pre-release per environment: the one of its latest tag after the latest release (`release-tag`). Each new tag gets a
 new pre-release and the older ones are deleted; the runs promoting from it update only its notes. In a chain like
-alpha → beta → release, the alpha pre-release left behind by a release goes away at the next alpha run. An environment
-handles only the pre-releases of its own template: after a change of template, the last pre-release of the old one is
-left behind, and goes away by hand.
+alpha → beta → release, the alpha pre-release left behind by a release goes away at the next alpha run. An
+environment handles only the pre-releases of its own template: after a change of template, the last pre-release of the
+old one is left behind, and goes away by hand.
 
 Files are attached only when a release is created, later only title and notes change: immutable releases work. A
 re-run that finds the release already created does not add its files. A promoted tag gets the files of its
