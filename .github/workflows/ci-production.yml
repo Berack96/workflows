@@ -1,4 +1,4 @@
-# By hand: release `vX.Y.Z` of a staging tag of this repository.
+# By hand: release `vX.Y.Z` of a staging tag of this repository, then the staging tags before it are deleted.
 name: Production
 
 on:
@@ -22,3 +22,4 @@ jobs:
       from: v{YYYY}.{MM}-staging.{NNN}
       from-tag: ${{ inputs.tag }}
       from-workflow: ci-staging.yml
+      prune: true
