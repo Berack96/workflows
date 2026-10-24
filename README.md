@@ -114,6 +114,22 @@ A variant of a release, a template other than `release-tag` like `fabric-26.3@{X
 has its release takes the same version: a job creates `v1.5.0`, the next ones `fabric-26.3@1.5.0`, `neoforge-26.3@1.5.0`.
 A variant added later starts from the version of the mod, not from `0.0.1`.
 
+#### Projects and dependencies
+
+In a monorepo each project is an environment, with its directories in `path`. With `deps` the ones it depends on are
+found from the files of the workspace, without running the build tools:
+
+| `deps` | Packages | Dependencies | Shared files |
+| --- | --- | --- | --- |
+| `cargo` | `workspace.members` of `Cargo.toml` | `[dependencies]`, `[dev-dependencies]`, `[build-dependencies]`, also of `[target.*]` | `Cargo.toml`, `Cargo.lock`, `rust-toolchain(.toml)`, `.cargo` |
+| `gradle` | `include` of `settings.gradle(.kts)`, with their `projectDir` | `project(":x")` and `projects.x` in their `build.gradle(.kts)` | root build and settings files, `gradle.properties`, `gradle`, `buildSrc`, `build-logic` |
+| `node` | `workspaces` of `package.json`, `pnpm-workspace.yaml` | `dependencies`, `devDependencies`, `peerDependencies`, `optionalDependencies` | `package.json`, `pnpm-workspace.yaml`, the lockfiles of npm, bun, yarn and pnpm |
+| `uv` | `tool.uv.workspace.members` of `pyproject.toml` | `dependencies`, `optional-dependencies`, `dependency-groups` | `pyproject.toml`, `uv.lock`, `.python-version` |
+
+A change in a shared file gives a tag to every project, even if it touches only one of them. Anything else (a
+`mise.toml`, a Dockerfile) goes in `path`, or in the output of `paths-command`. The command runs at the root of the
+repository, without the token of the job, and its tools must already be there. The log of the run lists all the paths.
+
 #### GitHub releases
 
 `github-release: release` creates a release for each tag, `none` only tags. With `prerelease` there is at most one
@@ -137,7 +153,9 @@ Permissions: `contents: write`, `pull-requests: read`, `actions: read`.
 | `from-tag` | | Tag to promote (empty for the latest of `from` on the branch) |
 | `from-workflow` | | Workflow file that must have passed on the commit of the tag to promote |
 | `github-release` | `release` | `release`, `prerelease` or `none` |
-| `path` | | Directories of the project in a monorepo, one per line: its own and the ones it depends on. Only their commits count for `{X}.{Y}.{Z}` and the notes, and without `from` no tag is created if none came after the latest tag of the environment |
+| `path` | | Directories and files of the project in a monorepo, one per line. Only their commits count for `{X}.{Y}.{Z}` and the notes, and without `from` no tag is created if none came after the latest tag of the environment |
+| `deps` | | `cargo`, `gradle`, `node` or `uv`: adds to `path` the workspace packages its projects depend on, and the shared build files |
+| `paths-command` | | Command (bash) whose output, one per line, is added to `path`: for the dependencies `deps` cannot find |
 | `artifact` | | Artifact whose files are attached to the GitHub release (without `from`) |
 | `assets-notes` | | Text added to the release notes when there are attached files |
 | `cliff-config` | | git-cliff config of the release notes (empty for the bundled one) |
@@ -376,8 +394,8 @@ jobs:
       artifact: ${{ matrix.loader }}
 ```
 
-A monorepo, one environment per project: each one with its directories and the ones it depends on. A change in
-`common` gives a staging tag to both loaders, a change in `fabric` only to Fabric:
+A monorepo, one environment per project, with the dependencies from Gradle: a change in `common` gives a staging tag
+to both loaders, a change in `fabric` only to Fabric:
 
 ```yaml
 on:
@@ -401,7 +419,8 @@ jobs:
       github-release: prerelease
       path: |
         ${{ matrix.loader }}
-        common
+        mise.toml
+      deps: gradle
 ```
 
 ## This repository

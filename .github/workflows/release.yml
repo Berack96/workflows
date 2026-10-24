@@ -31,7 +31,15 @@ on:
         type: string
         default: release
       path:
-        description: Directories of the project in a monorepo, one per line (its own and the ones it depends on), the only ones whose commits count for the tags, `{X}.{Y}.{Z}` and the notes
+        description: Directories and files of the project in a monorepo, one per line, the only ones whose commits count for the tags, `{X}.{Y}.{Z}` and the notes
+        type: string
+        default: ""
+      deps:
+        description: "`cargo`, `gradle`, `node` or `uv`: adds to `path` the workspace packages its projects depend on and the shared build files"
+        type: string
+        default: ""
+      paths-command:
+        description: Command (bash) whose output, one per line, is added to `path`
         type: string
         default: ""
       artifact:
@@ -87,6 +95,8 @@ jobs:
       PROJECT_PATH: ${{ inputs.path }}
       ASSETS_NOTES: ${{ inputs.assets-notes }}
       CLIFF_CONFIG: ${{ inputs.cliff-config }}
+      DEPS: ${{ inputs.deps }}
+      PATHS_COMMAND: ${{ inputs.paths-command }}
     steps:
       # Private repositories have no environment reviewers: only an admin of the repository runs it by hand.
       - if: github.event_name == 'workflow_dispatch'
@@ -157,8 +167,8 @@ jobs:
           shopt -s inherit_errexit
           release_tag=${RELEASE_TAG:-$TAG}
           cliff_config=${CLIFF_CONFIG:-$RUNNER_TEMP/cliff.toml}
-          # The directories of `path`, one per line.
-          mapfile -t paths < <(sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e 's|/$||' -e '/^$/d' <<< "$PROJECT_PATH")
+          # The directories and files of the project, from the Setup step.
+          mapfile -t paths < "$RUNNER_TEMP/paths.txt"
           pathspec=()
           if [ "${#paths[@]}" -gt 0 ]; then
             pathspec=(-- "${paths[@]}")
@@ -301,7 +311,11 @@ jobs:
           notes() {
             local text path include=()
             for path in "${paths[@]}"; do
-              include+=(--include-path "$path/**/*")
+              if [ -d "$path" ]; then
+                include+=(--include-path "$path/**/*")
+              else
+                include+=(--include-path "$path")
+              fi
             done
             text=$(git-cliff --config "$cliff_config" --github-repo "$GH_REPO" --tag-pattern "$(regex "$release_tag")" \
               "${include[@]}" "$(range "$1" "$2")" --tag "$3")
@@ -352,6 +366,187 @@ jobs:
               done
           }
           EOF
+
+          cat > "$RUNNER_TEMP/deps.py" << 'EOF'
+          """Directories of the workspace packages that the projects in argv[2:] depend on, with the projects themselves, plus the
+          shared build files at the root (manifests, lockfiles, toolchain): one per line. argv[1]: cargo, gradle, node or uv.
+          The files are read as text, without running the build tools: a dependency they cannot see is not found."""
+
+          import glob
+          import json
+          import re
+          import sys
+          import tomllib
+          from pathlib import Path
+
+          SHARED = {
+              "cargo": ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "rust-toolchain", ".cargo"],
+              "gradle": [
+                  "settings.gradle",
+                  "settings.gradle.kts",
+                  "build.gradle",
+                  "build.gradle.kts",
+                  "gradle.properties",
+                  "gradle",
+                  "buildSrc",
+                  "build-logic",
+              ],
+              "node": [
+                  "package.json",
+                  "package-lock.json",
+                  "npm-shrinkwrap.json",
+                  "bun.lock",
+                  "bun.lockb",
+                  "yarn.lock",
+                  "pnpm-lock.yaml",
+                  "pnpm-workspace.yaml",
+              ],
+              "uv": ["pyproject.toml", "uv.lock", ".python-version"],
+          }
+
+
+          def toml(path: Path) -> dict:
+              return tomllib.loads(path.read_text(encoding="utf-8"))
+
+
+          def dirs(patterns: list[str], exclude: list[str] = ()) -> list[Path]:
+              """The directories of the glob `patterns`, without the ones of `exclude`."""
+              excluded = {Path(p) for e in exclude for p in glob.glob(e)}
+              found = {Path(d) for p in patterns for d in glob.glob(p) if Path(d).is_dir()}
+              return sorted(found - excluded)
+
+
+          def cargo() -> dict[Path, tuple[str, set[str]]]:
+              """Members of the Cargo workspace: name and names of their dependencies (renamed ones by their `package`)."""
+              workspace = toml(Path("Cargo.toml")).get("workspace", {})
+              found = {}
+              for folder in dirs(workspace.get("members", []), workspace.get("exclude", [])):
+                  if not (folder / "Cargo.toml").is_file():
+                      continue
+                  manifest = toml(folder / "Cargo.toml")
+                  tables = [manifest] + list(manifest.get("target", {}).values())
+                  deps = {
+                      (spec.get("package", name) if isinstance(spec, dict) else name)
+                      for table in tables
+                      for kind in ("dependencies", "dev-dependencies", "build-dependencies")
+                      for name, spec in table.get(kind, {}).items()
+                  }
+                  found[folder] = (manifest["package"]["name"], deps)
+              return found
+
+
+          def node() -> dict[Path, tuple[str, set[str]]]:
+              """Packages of the npm/bun/yarn workspaces (`workspaces` of package.json) or of pnpm-workspace.yaml."""
+              patterns = json.loads(Path("package.json").read_text(encoding="utf-8")).get("workspaces", [])
+              if isinstance(patterns, dict):
+                  patterns = patterns.get("packages", [])
+              if Path("pnpm-workspace.yaml").is_file():
+                  # shortcut: only the `- 'glob'` lines of the file, enough for the usual `packages:` list.
+                  lines = Path("pnpm-workspace.yaml").read_text(encoding="utf-8").splitlines()
+                  patterns += [m[1] for line in lines if (m := re.match(r"""^\s*-\s*['"]?([^'"#\s]+)""", line))]
+              found = {}
+              for folder in dirs([p for p in patterns if not p.startswith("!")], [p[1:] for p in patterns if p.startswith("!")]):
+                  if not (folder / "package.json").is_file():
+                      continue
+                  manifest = json.loads((folder / "package.json").read_text(encoding="utf-8"))
+                  kinds = ("dependencies", "devDependencies", "peerDependencies", "optionalDependencies")
+                  found[folder] = (manifest.get("name", ""), {name for kind in kinds for name in manifest.get(kind, {})})
+              return found
+
+
+          def normalize(name: str) -> str:
+              return re.sub(r"[-_.]+", "-", name).lower()
+
+
+          def uv() -> dict[Path, tuple[str, set[str]]]:
+              """Members of the uv workspace: dependencies, optional ones and dependency groups (the root is not a member)."""
+              workspace = toml(Path("pyproject.toml")).get("tool", {}).get("uv", {}).get("workspace", {})
+              found = {}
+              for folder in dirs(workspace.get("members", []), workspace.get("exclude", [])):
+                  if folder == Path(".") or not (folder / "pyproject.toml").is_file():
+                      continue
+                  manifest = toml(folder / "pyproject.toml")
+                  project = manifest.get("project", {})
+                  specs = list(project.get("dependencies", []))
+                  specs += [s for group in project.get("optional-dependencies", {}).values() for s in group]
+                  specs += [s for group in manifest.get("dependency-groups", {}).values() for s in group if isinstance(s, str)]
+                  deps = {normalize(m[1]) for s in specs if (m := re.match(r"\s*([A-Za-z0-9][A-Za-z0-9._-]*)", s))}
+                  found[folder] = (normalize(project.get("name", "")), deps)
+              return found
+
+
+          def gradle() -> dict[Path, tuple[str, set[str]]]:
+              """Projects of settings.gradle(.kts): the `project(":x")` and `projects.x` in their build files."""
+              settings = next((Path(f) for f in ("settings.gradle.kts", "settings.gradle") if Path(f).is_file()), None)
+              if settings is None:
+                  sys.exit("::error::no settings.gradle(.kts)")
+              text = settings.read_text(encoding="utf-8")
+              paths = [
+                  ":" + p.lstrip(":")
+                  for call in re.findall(r"\binclude\b\s*\(?([^)\n]*)", text)
+                  for p in re.findall(r"""["']([^"']+)["']""", call)
+              ]
+              folders = {p: Path(*p.strip(":").split(":")) for p in paths}
+              for path, folder in re.findall(
+                  r"""project\(\s*["'](:?[^"']+)["']\s*\)\.projectDir\s*=\s*(?:file\(\s*)?(?:File\([^,]*,\s*)?["']([^"']+)["']""", text
+              ):
+                  folders[":" + path.lstrip(":")] = Path(folder)
+              # Type-safe accessors: `:my-lib:core` is `projects.myLib.core`.
+              accessors = {
+                  ".".join(re.sub(r"[-_](\w)", lambda m: m[1].upper(), s) for s in p.strip(":").split(":")): p for p in folders
+              }
+              found = {}
+              for path, folder in folders.items():
+                  deps = set()
+                  for build in (folder / "build.gradle.kts", folder / "build.gradle"):
+                      if build.is_file():
+                          text = build.read_text(encoding="utf-8")
+                          deps |= {":" + p.lstrip(":") for p in re.findall(r"""project\(\s*(?:path\s*[:=]\s*)?["'](:[^"']*)["']""", text)}
+                          deps |= {accessors[a] for a in re.findall(r"\bprojects\.([\w.]+)", text) if a in accessors}
+                  found[folder] = (path, deps)
+              return found
+
+
+          def main() -> None:
+              kind, projects = sys.argv[1], [Path(p) for p in sys.argv[2:]]
+              packages = {"cargo": cargo, "gradle": gradle, "node": node, "uv": uv}[kind]()
+              by_name = {name: folder for folder, (name, _) in packages.items()}
+              todo, seen = list(projects), set()
+              for project in projects:
+                  if project not in packages:
+                      print(f"::warning::{project.as_posix()} is not a {kind} workspace package", file=sys.stderr)
+              while todo:
+                  folder = todo.pop()
+                  if folder in seen:
+                      continue
+                  seen.add(folder)
+                  todo += [by_name[d] for d in packages.get(folder, ("", set()))[1] if d in by_name]
+              print("\n".join(sorted(f.as_posix() for f in seen) + SHARED[kind]))
+
+
+          if __name__ == "__main__":
+              main()
+          EOF
+
+          # The paths of the project: `path`, the dependencies of `deps` and the output of `paths-command`, without the
+          # token: the command comes from the repository, it does not need to write to it.
+          [[ $DEPS =~ ^(|cargo|gradle|node|uv)$ ]] || { echo "::error::unknown deps $DEPS"; exit 1; }
+          trim() { sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e 's|^\./||' -e 's|/$||' -e '/^$/d'; }
+          mapfile -t own < <(trim <<< "$PROJECT_PATH")
+          [ -z "$DEPS" ] || [ "${#own[@]}" -gt 0 ] || { echo "::error::deps needs the directories of the project in path"; exit 1; }
+          {
+            printf '%s\n' "${own[@]}"
+            if [ -n "$DEPS" ]; then
+              python3 -I "$RUNNER_TEMP/deps.py" "$DEPS" "${own[@]}"
+            fi
+            if [ -n "$PATHS_COMMAND" ]; then
+              env -u GH_TOKEN -u GITHUB_TOKEN bash -eo pipefail -c "$PATHS_COMMAND"
+            fi
+          } | trim | sort -u > "$RUNNER_TEMP/paths.txt"
+          if [ -s "$RUNNER_TEMP/paths.txt" ]; then
+            echo "Paths of the project:"
+            sed 's/^/  /' "$RUNNER_TEMP/paths.txt"
+          fi
 
           source "$RUNNER_TEMP/release.sh"
           [[ $GITHUB_RELEASE =~ ^(release|prerelease|none)$ ]] || { echo "::error::unknown github-release $GITHUB_RELEASE"; exit 1; }
