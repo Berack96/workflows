@@ -66,6 +66,10 @@ on:
         description: Tag this run must create, from a previous `dry-run` (empty for any)
         type: string
         default: ""
+      prune:
+        description: With `from`, delete the tags of `from` before the promoted one, except the ones of the current period (`{N}` counts from them) and the ones with a GitHub release
+        type: boolean
+        default: false
 
     outputs:
       tag:
@@ -337,6 +341,33 @@ jobs:
               text+=$'\n\n'"$ASSETS_NOTES"
             fi
             echo "$text"
+          }
+
+          # Deletes the tags of template $1 before commit $2 (reachable from it, not on it): the ones of the current period
+          # stay, the same dates as today, since `{N}` goes on from them (without dates, the newest one stays). Tags with a
+          # GitHub release stay too.
+          prune() {
+            local re current dated=false newest released tag
+            local -A values
+            values[YYYY]=$(date -u +%Y)
+            values[YY]=${values[YYYY]:2}
+            values[MM]=$(date -u +%m)
+            re=$(regex "$1")
+            current=$(regex "$(render "$1")")
+            if [[ $1 == *\{YY* || $1 == *\{MM\}* ]]; then
+              dated=true
+            fi
+            newest=$(git tag --list "$(glob "$1")" --sort=-v:refname | grep -E -m 1 "$re" || true)
+            released=$(gh release list --limit 1000 --json tagName --jq '.[].tagName')
+            git tag --merged "$2" --list "$(glob "$1")" | while read -r tag; do
+              if ! [[ $tag =~ $re ]] || [ "$(git rev-parse "$tag^{commit}")" = "$(git rev-parse "$2^{commit}")" ] ||
+                { $dated && [[ $tag =~ $current ]]; } || { ! $dated && [ "$tag" = "$newest" ]; } ||
+                grep -qxF -- "$tag" <<< "$released"; then
+                continue
+              fi
+              echo "Deleting $tag"
+              gh api -X DELETE "repos/$GH_REPO/git/refs/tags/$tag" || echo "::warning::could not delete the tag $tag"
+            done
           }
 
           # A single pre-release of the tags of template $1: on the latest one after the latest release, with the notes
@@ -704,3 +735,12 @@ jobs:
           if [ -n "$FROM" ]; then
             prereleases "$FROM" false
           fi
+
+      # The tags of `from` before the promoted one are a temporary history: once released, they can go.
+      - name: Prune
+        if: steps.target.outputs.skip != 'true' && !inputs.dry-run && inputs.from != '' && inputs.prune
+        env:
+          SHA: ${{ steps.target.outputs.sha }}
+        run: |
+          source "$RUNNER_TEMP/release.sh"
+          prune "$FROM" "$SHA"
