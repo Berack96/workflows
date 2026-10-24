@@ -657,7 +657,12 @@ jobs:
           SOURCE: ${{ steps.target.outputs.source }}
         run: |
           mkdir -p dist
-          gh release download "$SOURCE" --dir dist || echo "::warning::no GitHub release with files for $SOURCE"
+          # A release without files is not an error: `gh release download` would fail on it.
+          if ! assets=$(gh release view "$SOURCE" --json assets --jq '.assets | length' 2> /dev/null); then
+            echo "::warning::no GitHub release for $SOURCE: only the latest tag of an environment has its pre-release"
+          elif [ "$assets" -gt 0 ]; then
+            gh release download "$SOURCE" --dir dist
+          fi
 
       # A re-run finds tag and release already created: the tag must be on this commit and the release created by this
       # workflow, not by someone who prepared it before with their own files.
