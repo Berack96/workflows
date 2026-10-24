@@ -69,8 +69,9 @@ jobs:
           # Rust: the outermost Cargo.toml of each tree (a workspace, or a crate on its own) and each directory with a
           # Cargo.lock. A library without Cargo.lock is checked too, with one generated at the latest versions.
           {
-            git ls-files | grep -E '(^|/)Cargo\.lock$' | xargs -r -n1 dirname
-            git ls-files | grep -E '(^|/)Cargo\.toml$' | xargs -r -n1 dirname | sort |
+            # `|| true`: no Cargo file is not an error.
+            { git ls-files | grep -E '(^|/)Cargo\.lock$' || true; } | xargs -r -n1 dirname
+            { git ls-files | grep -E '(^|/)Cargo\.toml$' || true; } | xargs -r -n1 dirname | sort |
               awk '{ for (i = 1; i <= n; i++) if ($0 == k[i] || k[i] == "." || index($0, k[i] "/") == 1) next; k[++n] = $0; print }'
           } | sort -u > "$RUNNER_TEMP/rust.files"
           if [ -s "$RUNNER_TEMP/rust.files" ]; then
