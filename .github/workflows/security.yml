@@ -45,6 +45,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      # The report as a comment on the PR.
+      pull-requests: write
     # `shell: bash` turns on pipefail: without it, `tee` would hide the result of the check.
     defaults:
       run:
@@ -145,10 +147,15 @@ jobs:
           mapfile -t files < "$RUNNER_TEMP/go.files"
           docker run --rm --quiet -v "$PWD:/repo:ro" -w /repo "$OSV_SCANNER" \
             scan source "${files[@]/#/--lockfile=}" 2>&1 | tee "$RUNNER_TEMP/go.txt"
-      # Table of the results in the run summary, with the output of the failed checks only.
-      - name: Summary
+      # Report of the results, with the output of the failed checks only: in the run summary and, on a PR, in a comment
+      # that later runs update. The comment is created only when a check fails.
+      - name: Report
         if: always()
         env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           RESULTS: |
             gitleaks ${{ steps.gitleaks.outcome }} Secrets (gitleaks)
             zizmor ${{ steps.zizmor.outcome }} GitHub Actions (zizmor)
@@ -159,8 +166,11 @@ jobs:
             java ${{ steps.java.outcome }} Java dependencies (OSV-Scanner)
             go ${{ steps.go.outcome }} Go dependencies (OSV-Scanner)
         run: |
+          marker="<!-- security-report -->"
+          report="$RUNNER_TEMP/report.md"
           failed=""
           {
+            echo "$marker"
             echo "## Security"
             echo
             echo "| Check | Result |"
@@ -177,9 +187,28 @@ jobs:
               esac
             done <<< "$RESULTS"
             for id in $failed; do
-              printf '\n### %s\n\n```\n' "$id"
-              cat "$RUNNER_TEMP/$id.txt" 2>/dev/null || echo "No output: the check did not start."
-              printf '```\n'
+              printf '\n<details><summary>%s</summary>\n\n```\n' "$id"
+              # The last lines only: a comment holds at most 65536 characters.
+              tail -n 150 "$RUNNER_TEMP/$id.txt" 2>/dev/null || echo "No output: the check did not start."
+              printf '```\n\n</details>\n'
             done
-          } >> "$GITHUB_STEP_SUMMARY"
+            printf '\n[Run](%s)\n' "$RUN_URL"
+          } > "$report"
+          cat "$report" >> "$GITHUB_STEP_SUMMARY"
+
+          if [ -n "$PR" ]; then
+            comment=$(gh api "repos/$GH_REPO/issues/$PR/comments" --paginate \
+              --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$marker\"))) | .id") ||
+              comment=""
+            comment=${comment%%$'\n'*}
+            body=$(head -c 65000 "$report")
+            # A PR from a fork has a read-only token: the report stays in the summary.
+            if [ -n "$comment" ]; then
+              gh api -X PATCH "repos/$GH_REPO/issues/comments/$comment" -f body="$body" > /dev/null ||
+                echo "::warning::could not update the comment on the PR"
+            elif [ -n "$failed" ]; then
+              gh api "repos/$GH_REPO/issues/$PR/comments" -f body="$body" > /dev/null ||
+                echo "::warning::could not comment on the PR"
+            fi
+          fi
           [ -z "$failed" ]

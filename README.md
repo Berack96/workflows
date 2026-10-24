@@ -37,18 +37,22 @@ Runs the lint and test commands of the caller. Permissions: `contents: read`.
 
 | Input | Default | |
 | --- | --- | --- |
+| `pre-run` | | Commands that prepare the tests, before `run` (bash, one per line) |
 | `run` | required | Commands (bash, one per line) |
 | `env` | | Environment variables for the whole job, one `NAME=value` per line |
 | `mise` | `false` | Install the tools of the repository's mise config (pinned mise) |
-| `rust-cache` | `false` | Cache the Rust builds (`Swatinem/rust-cache`) |
+| `cache` | | Paths to keep between runs, one per line (`actions/cache`) |
+| `cache-key` | | Glob of the files whose hash is the key of the cache, e.g. `**/Cargo.lock`; empty for a new cache each run, restored from the latest |
 | `artifact` | | Name of an artifact to upload after the tests, for the next jobs |
 | `artifact-path` | | Files of the artifact |
 
 ### `security.yml`
 
-Security checks, each one can be turned off. The dependency checks run only when their lockfiles are tracked in the
-repository; any known vulnerability fails them. The run summary has a table of the results, with the output of the
-failed checks. Permissions: `contents: read`.
+Security checks, each one can be turned off (e.g. `python: false` when the Python code does not go to production). The
+dependency checks run only when their lockfiles are tracked in the repository; any known vulnerability fails them. The
+report, a table of the results with the output of the failed checks, is always in the run summary; on a PR it is also
+a comment, created when a check fails and updated by the next runs. Permissions: `contents: read`,
+`pull-requests: write`.
 
 | Input | Default | Check |
 | --- | --- | --- |
@@ -155,9 +159,15 @@ jobs:
     uses: Berack96/workflows/.github/workflows/test.yml@<sha> # vX.Y.Z
     with:
       mise: true
-      rust-cache: true
+      cache: |
+        ~/.cargo/registry
+        ~/.cargo/git
+        target
+      cache-key: "**/Cargo.lock"
       env: |
         CARGO_TERM_COLOR=always
+      pre-run: |
+        mise run setup
       run: |
         mise run lint
         mise run test
@@ -167,6 +177,7 @@ jobs:
     if: ${{ !github.event.pull_request.draft }}
     permissions:
       contents: read
+      pull-requests: write
     uses: Berack96/workflows/.github/workflows/security.yml@<sha> # vX.Y.Z
     with:
       python: false
@@ -206,6 +217,7 @@ jobs:
     name: Security
     permissions:
       contents: read
+      pull-requests: write
     uses: Berack96/workflows/.github/workflows/security.yml@<sha> # vX.Y.Z
 
   issue:

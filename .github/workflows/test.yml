@@ -1,9 +1,13 @@
-# Lint and tests: the commands come from the caller, the job only prepares the tools.
+# Lint and tests: the commands come from the caller, the job only prepares the tools and the cache.
 name: Test
 
 on:
   workflow_call:
     inputs:
+      pre-run:
+        description: Commands that prepare the tests, before `run` (bash, one per line)
+        type: string
+        default: ""
       run:
         description: Commands that run lint and tests (bash, one per line)
         type: string
@@ -16,10 +20,14 @@ on:
         description: Install the tools of the repository's mise config
         type: boolean
         default: false
-      rust-cache:
-        description: Cache the Rust builds (Swatinem/rust-cache)
-        type: boolean
-        default: false
+      cache:
+        description: Paths to keep between runs, one per line (empty for no cache)
+        type: string
+        default: ""
+      cache-key:
+        description: Glob of the files whose hash is the key of the cache, e.g. `**/Cargo.lock` (empty for a new cache each run)
+        type: string
+        default: ""
       artifact:
         description: Name of an artifact to upload after the tests, for the next jobs (empty for none)
         type: string
@@ -52,9 +60,20 @@ jobs:
         with:
           version: 2026.10.9
           sha256: 6ab6646b52b83f6bbd51c9d0d3ae54264ffa90efd1ac6d7c0ec5a86bbc6a0030
-      - if: inputs.rust-cache
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - env:
+      # A cache with the key never changes: without `cache-key` each run saves a new one and restores the latest.
+      - if: inputs.cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ inputs.cache }}
+          key: test-${{ runner.os }}-${{ inputs.cache-key && hashFiles(inputs.cache-key) || github.sha }}
+          restore-keys: test-${{ runner.os }}-
+      - name: Pre-run
+        if: inputs.pre-run
+        env:
+          RUN: ${{ inputs.pre-run }}
+        run: bash -eo pipefail -c "$RUN"
+      - name: Run
+        env:
           RUN: ${{ inputs.run }}
         run: bash -eo pipefail -c "$RUN"
       - if: inputs.artifact
