@@ -177,7 +177,7 @@ deploy is a job before or after the release, with `needs` and its outputs.
 | Template | Tags |
 | --- | --- |
 | `v{X}.{Y}.{Z}` (default) | `v1.6.3` |
-| `v{YYYY}.{MM}-build.{NNN}` | `v2026.05-build.007` |
+| `v{YYYY}.{MM}-staging.{NNN}` | `v2026.05-staging.007` |
 | `v{X}.{Y}.{Z}-beta.{N}` | `v1.7.0-beta.2` |
 | `v{YY}.{MM}.{N}` | `v26.05.3` |
 | `web@{X}.{Y}.{Z}` | `web@1.6.3` |
@@ -187,7 +187,7 @@ deploy is a job before or after the release, with `needs` and its outputs.
 A template must give a different tag to each commit: with only dates, add a `{N}`.
 
 GitHub lists the releases by the name of their tags read as versions, not by date: a pre-release `staging-…` goes
-below every `v1.2.3`, even when it is the newest. A staging template like `v{YYYY}.{MM}-build.{NNN}` stays above the
+below every `v1.2.3`, even when it is the newest. A staging template like `v{YYYY}.{MM}-staging.{NNN}` stays above the
 releases, and holds no version of a release: a staging tag never becomes wrong, whichever one is promoted. With
 `v{X}.{Y}.{Z}-rc.{N}` instead, promoting an older candidate leaves the newer ones with the number of a release
 already out.
@@ -370,7 +370,7 @@ jobs:
       actions: read
     uses: Berack96/workflows/.github/workflows/release.yml@<sha> # vX.Y.Z
     with:
-      tag: v{YYYY}.{MM}-build.{NNN}
+      tag: v{YYYY}.{MM}-staging.{NNN}
       release-tag: v{X}.{Y}.{Z}
       github-release: prerelease
       artifact: dist
@@ -400,7 +400,7 @@ jobs:
       actions: read
     uses: Berack96/workflows/.github/workflows/release.yml@<sha> # vX.Y.Z
     with:
-      from: v{YYYY}.{MM}-build.{NNN}
+      from: v{YYYY}.{MM}-staging.{NNN}
       from-tag: ${{ inputs.tag }}
       from-workflow: staging.yml
 ```
@@ -581,4 +581,4 @@ jobs:
 ## This repository
 
 The `ci-*.yml` workflows run the workflows above on this repository itself: PR title, security checks (on PRs, and
-weekly with the fixes), staging tags `vYYYY.MM-build.NNN` on `main` and releases `vX.Y.Z` by hand.
+weekly with the fixes), staging tags `vYYYY.MM-staging.NNN` on `main` and releases `vX.Y.Z` by hand.
