@@ -38,12 +38,16 @@ on:
         description: "`cargo`, `gradle`, `node` or `uv`: adds to `path` the workspace packages its projects depend on and the shared build files"
         type: string
         default: ""
+      deps-root:
+        description: Directory of the workspace that `deps` reads
+        type: string
+        default: "."
       paths-command:
         description: Command (bash) whose output, one per line, is added to `path`
         type: string
         default: ""
       artifact:
-        description: Artifact whose files are attached to the GitHub release (without `from`)
+        description: Artifacts whose files are attached to the GitHub release (without `from`), a name or a glob like `build-*`
         type: string
         default: ""
       assets-notes:
@@ -52,6 +56,14 @@ on:
         default: ""
       cliff-config:
         description: git-cliff config of the release notes (empty for the bundled one)
+        type: string
+        default: ""
+      dry-run:
+        description: Only compute the tag, in the `tag` output, without creating tags and releases (for a build that needs its version)
+        type: boolean
+        default: false
+      expect-tag:
+        description: Tag this run must create, from a previous `dry-run` (empty for any)
         type: string
         default: ""
 
@@ -77,8 +89,9 @@ jobs:
       pull-requests: read
       actions: read
     # One queue per environment: a pending run gives way to the next one, other environments do not stop it.
+    # A dry run creates nothing: apart, so that it does not take the place of a release in the queue.
     concurrency:
-      group: release-${{ inputs.tag }}
+      group: release-${{ inputs.tag }}${{ inputs.dry-run && '-dry-run' || '' }}
     defaults:
       run:
         shell: bash
@@ -96,6 +109,7 @@ jobs:
       ASSETS_NOTES: ${{ inputs.assets-notes }}
       CLIFF_CONFIG: ${{ inputs.cliff-config }}
       DEPS: ${{ inputs.deps }}
+      DEPS_ROOT: ${{ inputs.deps-root }}
       PATHS_COMMAND: ${{ inputs.paths-command }}
     steps:
       # Private repositories have no environment reviewers: only an admin of the repository runs it by hand.
@@ -368,12 +382,14 @@ jobs:
           EOF
 
           cat > "$RUNNER_TEMP/deps.py" << 'EOF'
-          """Directories of the workspace packages that the projects in argv[2:] depend on, with the projects themselves, plus the
-          shared build files at the root (manifests, lockfiles, toolchain): one per line. argv[1]: cargo, gradle, node or uv.
+          """Directories of the workspace packages that the projects in argv[3:] depend on, with the projects themselves, plus the
+          shared build files of the workspace (manifests, lockfiles, toolchain): one per line. argv[1]: cargo, gradle, node or
+          uv; argv[2]: the directory of the workspace.
           The files are read as text, without running the build tools: a dependency they cannot see is not found."""
 
           import glob
           import json
+          import os
           import re
           import sys
           import tomllib
@@ -508,7 +524,10 @@ jobs:
 
 
           def main() -> None:
-              kind, projects = sys.argv[1], [Path(p) for p in sys.argv[2:]]
+              # The paths of the repository, relative to the workspace while reading it.
+              kind, root = sys.argv[1], Path(sys.argv[2])
+              projects = [Path(os.path.relpath(p, root)) for p in sys.argv[3:]]
+              os.chdir(root)
               packages = {"cargo": cargo, "gradle": gradle, "node": node, "uv": uv}[kind]()
               by_name = {name: folder for folder, (name, _) in packages.items()}
               todo, seen = list(projects), set()
@@ -521,7 +540,7 @@ jobs:
                       continue
                   seen.add(folder)
                   todo += [by_name[d] for d in packages.get(folder, ("", set()))[1] if d in by_name]
-              print("\n".join(sorted(f.as_posix() for f in seen) + SHARED[kind]))
+              print("\n".join(os.path.normpath(root / f) for f in sorted(seen) + [Path(f) for f in SHARED[kind]]))
 
 
           if __name__ == "__main__":
@@ -537,7 +556,7 @@ jobs:
           {
             printf '%s\n' "${own[@]}"
             if [ -n "$DEPS" ]; then
-              python3 -I "$RUNNER_TEMP/deps.py" "$DEPS" "${own[@]}"
+              python3 -I "$RUNNER_TEMP/deps.py" "$DEPS" "$DEPS_ROOT" "${own[@]}"
             fi
             if [ -n "$PATHS_COMMAND" ]; then
               env -u GH_TOKEN -u GITHUB_TOKEN bash -eo pipefail -c "$PATHS_COMMAND"
@@ -567,6 +586,7 @@ jobs:
         env:
           FROM_TAG: ${{ inputs.from-tag }}
           FROM_WORKFLOW: ${{ inputs.from-workflow }}
+          EXPECT_TAG: ${{ inputs.expect-tag }}
         run: |
           source "$RUNNER_TEMP/release.sh"
           source=""
@@ -615,19 +635,24 @@ jobs:
             tag=$(next_tag "$TAG" "$sha")
           fi
           echo "$sha: $tag"
+          # Another tag between the dry run and this one: the build would carry a version that is not the one of its tag.
+          [ -z "$EXPECT_TAG" ] || [ "$tag" = "$EXPECT_TAG" ] ||
+            { echo "::error::the tag is $tag, the build was made for $EXPECT_TAG"; exit 1; }
           {
             echo "source=$source"
             echo "sha=$sha"
             echo "tag=$tag"
           } >> "$GITHUB_OUTPUT"
 
-      - if: steps.target.outputs.skip != 'true' && inputs.from == '' && inputs.github-release != 'none' && inputs.artifact != ''
+      # All the artifacts of the glob in `dist`: files with the same name overwrite each other.
+      - if: steps.target.outputs.skip != 'true' && !inputs.dry-run && inputs.from == '' && inputs.github-release != 'none' && inputs.artifact != ''
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: ${{ inputs.artifact }}
+          pattern: ${{ inputs.artifact }}
+          merge-multiple: true
           path: dist
       # The files of the GitHub release of the promoted tag, if it is still there: a pre-release is only on the latest.
-      - if: inputs.from != '' && inputs.github-release != 'none'
+      - if: steps.target.outputs.skip != 'true' && !inputs.dry-run && inputs.from != '' && inputs.github-release != 'none'
         env:
           SOURCE: ${{ steps.target.outputs.source }}
         run: |
@@ -636,7 +661,7 @@ jobs:
 
       # A re-run finds tag and release already created: the tag must be on this commit and the release created by this
       # workflow, not by someone who prepared it before with their own files.
-      - if: steps.target.outputs.skip != 'true'
+      - if: steps.target.outputs.skip != 'true' && !inputs.dry-run
         env:
           SHA: ${{ steps.target.outputs.sha }}
           TARGET: ${{ steps.target.outputs.tag }}
@@ -659,7 +684,7 @@ jobs:
 
       # The pre-release of this environment, and the one of the promoted environment, which moves past the release.
       - name: Pre-release
-        if: steps.target.outputs.skip != 'true' && (inputs.github-release == 'prerelease' || inputs.from != '')
+        if: steps.target.outputs.skip != 'true' && !inputs.dry-run && (inputs.github-release == 'prerelease' || inputs.from != '')
         env:
           SHA: ${{ steps.target.outputs.sha }}
         run: |

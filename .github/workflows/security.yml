@@ -17,7 +17,7 @@ on:
         type: boolean
         default: true
       rust:
-        description: Rust dependencies, from `Cargo.lock` (cargo-deny)
+        description: Rust dependencies, of each workspace or `Cargo.lock` (cargo-deny)
         type: boolean
         default: true
       python:
@@ -66,7 +66,16 @@ jobs:
               echo "$1=true" >> "$GITHUB_OUTPUT"
             fi
           }
-          detect rust 'Cargo\.lock'
+          # Rust: the outermost Cargo.toml of each tree (a workspace, or a crate on its own) and each directory with a
+          # Cargo.lock. A library without Cargo.lock is checked too, with one generated at the latest versions.
+          {
+            git ls-files | grep -E '(^|/)Cargo\.lock$' | xargs -r -n1 dirname
+            git ls-files | grep -E '(^|/)Cargo\.toml$' | xargs -r -n1 dirname | sort |
+              awk '{ for (i = 1; i <= n; i++) if ($0 == k[i] || k[i] == "." || index($0, k[i] "/") == 1) next; k[++n] = $0; print }'
+          } | sort -u > "$RUNNER_TEMP/rust.files"
+          if [ -s "$RUNNER_TEMP/rust.files" ]; then
+            echo "rust=true" >> "$GITHUB_OUTPUT"
+          fi
           detect python 'uv\.lock|poetry\.lock|Pipfile\.lock|pdm\.lock|requirements\.txt'
           detect javascript 'package-lock\.json|yarn\.lock|pnpm-lock\.yaml|bun\.lock'
           detect java 'pom\.xml|gradle\.lockfile'
@@ -110,15 +119,22 @@ jobs:
           echo "$SHA256  $RUNNER_TEMP/cargo-deny.tar.gz" | sha256sum -c -
           tar -xzf "$RUNNER_TEMP/cargo-deny.tar.gz" -C "$RUNNER_TEMP"
           mapfile -t files < "$RUNNER_TEMP/rust.files"
-          for lock in "${files[@]}"; do
-            dir=$(dirname "$lock")
-            # Without a config cargo-deny rejects every license: those are checked only with a `deny.toml`.
-            checks=(advisories bans sources)
-            if [ -f "$dir/deny.toml" ] || [ -f "$dir/.deny.toml" ] || [ -f "$dir/.cargo/deny.toml" ]; then
-              checks=()
-            fi
-            "$RUNNER_TEMP/$name/cargo-deny" --manifest-path "$dir/Cargo.toml" check "${checks[@]}"
-          done 2>&1 | tee "$RUNNER_TEMP/rust.txt"
+          # Every workspace is checked, even after a failed one.
+          {
+            status=0
+            for dir in "${files[@]}"; do
+              if [ ! -f "$dir/Cargo.lock" ]; then
+                cargo generate-lockfile --manifest-path "$dir/Cargo.toml"
+              fi
+              # Without a config cargo-deny rejects every license: those are checked only with a `deny.toml`.
+              checks=(advisories bans sources)
+              if [ -f "$dir/deny.toml" ] || [ -f "$dir/.deny.toml" ] || [ -f "$dir/.cargo/deny.toml" ]; then
+                checks=()
+              fi
+              "$RUNNER_TEMP/$name/cargo-deny" --manifest-path "$dir/Cargo.toml" check "${checks[@]}" || status=1
+            done
+            exit "$status"
+          } 2>&1 | tee "$RUNNER_TEMP/rust.txt"
       - id: python
         if: inputs.python && steps.lockfiles.outputs.python
         continue-on-error: true

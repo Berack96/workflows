@@ -5,7 +5,7 @@ on:
   workflow_call:
     inputs:
       runs-on:
-        description: Runner of the job, e.g. `self-hosted`
+        description: Runner of the job, a label (`windows-latest`, `self-hosted`) or a JSON list of labels
         type: string
         default: ubuntu-latest
       services:
@@ -50,10 +50,14 @@ permissions: {}
 jobs:
   test:
     name: Checks
-    runs-on: ${{ inputs.runs-on }}
+    runs-on: ${{ startsWith(inputs.runs-on, '[') && fromJSON(inputs.runs-on) || inputs.runs-on }}
     services: ${{ fromJSON(inputs.services) }}
     permissions:
       contents: read
+    # Bash also on Windows, where the default is PowerShell.
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -64,18 +68,19 @@ jobs:
           VARS: ${{ inputs.env }}
         run: printf '%s\n' "$VARS" >> "$GITHUB_ENV"
       # mise pinned: version and sha256 of the linux-x64 binary (not of the archive).
+      # shortcut: on the other systems only the version is pinned, add their sha256 when they are used for releases.
       - if: inputs.mise
         uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
         with:
           version: 2026.10.9
-          sha256: 6ab6646b52b83f6bbd51c9d0d3ae54264ffa90efd1ac6d7c0ec5a86bbc6a0030
+          sha256: ${{ runner.os == 'Linux' && runner.arch == 'X64' && '6ab6646b52b83f6bbd51c9d0d3ae54264ffa90efd1ac6d7c0ec5a86bbc6a0030' || '' }}
       # A cache with the key never changes: without `cache-key` each run saves a new one and restores the latest.
       - if: inputs.cache
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ inputs.cache }}
-          key: test-${{ runner.os }}-${{ inputs.cache-key && hashFiles(inputs.cache-key) || github.sha }}
-          restore-keys: test-${{ runner.os }}-
+          key: test-${{ runner.os }}-${{ runner.arch }}-${{ inputs.cache-key && hashFiles(inputs.cache-key) || github.sha }}
+          restore-keys: test-${{ runner.os }}-${{ runner.arch }}-
       - name: Pre-run
         if: inputs.pre-run
         env:

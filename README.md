@@ -37,7 +37,7 @@ Runs the lint and test commands of the caller. Permissions: `contents: read`.
 
 | Input | Default | |
 | --- | --- | --- |
-| `runs-on` | `ubuntu-latest` | Runner of the job, e.g. `self-hosted` |
+| `runs-on` | `ubuntu-latest` | Runner of the job: a label (`windows-latest`, `self-hosted`) or a JSON list (`["self-hosted", "linux"]`). The steps run in bash also on Windows |
 | `services` | `{}` | Service containers (a database…), as the JSON of `jobs.<id>.services` |
 | `pre-run` | | Commands that prepare the tests, before `run` (bash, one per line) |
 | `run` | required | Commands (bash, one per line) |
@@ -61,7 +61,7 @@ a comment, created when a check fails and updated by the next runs. Permissions:
 | `secrets` | `true` | Committed secrets (gitleaks) |
 | `actions` | `true` | GitHub Actions workflows (zizmor, high severity) |
 | `iac` | `true` | Dockerfiles and other infrastructure as code (Trivy, high and critical) |
-| `rust` | `true` | `Cargo.lock` (cargo-deny: all checks with a `deny.toml`, without it all but licenses) |
+| `rust` | `true` | Each workspace (the outermost `Cargo.toml`) and each `Cargo.lock`; a library without `Cargo.lock` gets one at the latest versions (cargo-deny: all checks with a `deny.toml`, without it all but licenses) |
 | `python` | `true` | `uv.lock`, `poetry.lock`, `Pipfile.lock`, `pdm.lock`, `requirements.txt` (OSV-Scanner) |
 | `javascript` | `true` | `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `bun.lock` (OSV-Scanner) |
 | `java` | `true` | `pom.xml`, `gradle.lockfile` (OSV-Scanner; Gradle needs dependency locking) |
@@ -155,10 +155,13 @@ Permissions: `contents: write`, `pull-requests: read`, `actions: read`.
 | `github-release` | `release` | `release`, `prerelease` or `none` |
 | `path` | | Directories and files of the project in a monorepo, one per line. Only their commits count for `{X}.{Y}.{Z}` and the notes, and without `from` no tag is created if none came after the latest tag of the environment |
 | `deps` | | `cargo`, `gradle`, `node` or `uv`: adds to `path` the workspace packages its projects depend on, and the shared build files |
+| `deps-root` | `.` | Directory of the workspace that `deps` reads, e.g. `native` |
 | `paths-command` | | Command (bash) whose output, one per line, is added to `path`: for the dependencies `deps` cannot find |
-| `artifact` | | Artifact whose files are attached to the GitHub release (without `from`) |
+| `artifact` | | Artifacts whose files are attached to the GitHub release (without `from`): a name, or a glob like `build-*` for the ones of a matrix (files with the same name overwrite each other) |
 | `assets-notes` | | Text added to the release notes when there are attached files |
 | `cliff-config` | | git-cliff config of the release notes (empty for the bundled one) |
+| `dry-run` | `false` | Only compute the tag, without creating tags and releases: for a build that needs its version |
+| `expect-tag` | | Tag the run must create, the one of the dry run: it fails if another tag came in between |
 
 | Output | |
 | --- | --- |
@@ -333,6 +336,52 @@ jobs:
       from: test-{YY}.{MM}-build.{NNN}
       from-tag: ${{ inputs.tag }}
       from-workflow: staging.yml
+```
+
+A build that needs its version (in the jar, in `Cargo.toml`): a dry run gives the tag, the build uses it, the release
+creates it and checks it is still the same. With `path`, an empty tag means nothing changed:
+
+```yaml
+jobs:
+  version:
+    name: Version
+    permissions:
+      contents: write
+      pull-requests: read
+      actions: read
+    uses: Berack96/workflows/.github/workflows/release.yml@<sha> # vX.Y.Z
+    with:
+      dry-run: true
+
+  build:
+    name: Build
+    needs: version
+    if: needs.version.outputs.tag != ''
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    steps:
+      # ... builds dist/ with the version of ${{ needs.version.outputs.tag }}
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: build-${{ matrix.os }}
+          path: dist
+          retention-days: 1
+
+  release:
+    name: Release
+    needs: [version, build]
+    permissions:
+      contents: write
+      pull-requests: read
+      actions: read
+    uses: Berack96/workflows/.github/workflows/release.yml@<sha> # vX.Y.Z
+    with:
+      expect-tag: ${{ needs.version.outputs.tag }}
+      artifact: build-*
 ```
 
 A single release for the whole repository, by hand, without staging:
