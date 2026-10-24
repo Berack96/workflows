@@ -1,4 +1,5 @@
-# Security checks of this repository: on every PR and every Monday on main, for the CVEs found after the merge.
+# Security checks of this repository: on every PR and every Monday on main, for the CVEs found after the merge; by hand
+# on any branch.
 name: Security
 
 on:
@@ -6,6 +7,7 @@ on:
     types: [opened, synchronize, reopened, ready_for_review]
   schedule:
     - cron: "0 6 * * 1"
+  workflow_dispatch:
 
 permissions: {}
 
@@ -23,11 +25,12 @@ jobs:
       pull-requests: write
     uses: ./.github/workflows/security.yml
 
-  # Only on main: a draft PR with the updates of the vulnerable packages, or the report of the failure.
+  # Not on PRs: a draft PR with the updates of the vulnerable packages, or the report of the failure, on top of the
+  # branch of the run.
   fix:
     name: Fix
     needs: security
-    if: failure() && github.event_name == 'schedule'
+    if: failure() && github.event_name != 'pull_request'
     permissions:
       contents: write
       pull-requests: write
