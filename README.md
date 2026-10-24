@@ -25,11 +25,8 @@ jobs:
 The workflows contain all their scripts: nothing is loaded from this repository at another ref, so the pinned commit
 is all that runs. Inputs with several values (commands, paths) take one per line.
 
-Settings of the repositories:
+This repository is public: any repository can call it. Settings of the calling repositories:
 
-- **This repository private**: only the private repositories of the same owner can call it, with **Settings → Actions
-  → General → Access → Accessible from repositories owned by the user**. A public repository can call it only if this
-  one is public.
 - **`security-fix.yml`**: **Settings → Actions → General → Allow GitHub Actions to create and approve pull requests**
   in the calling repository.
 - **Immutable releases** (**Settings → General → Releases**) work with `release.yml`.
