@@ -47,12 +47,23 @@ on:
         type: string
         default: ""
 
+    outputs:
+      tag:
+        description: Tag of this run (empty when the branch has moved past the commit)
+        value: ${{ jobs.release.outputs.tag }}
+      sha:
+        description: Commit of the tag
+        value: ${{ jobs.release.outputs.sha }}
+
 permissions: {}
 
 jobs:
   release:
     name: Release
     runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.target.outputs.tag }}
+      sha: ${{ steps.target.outputs.sha }}
     permissions:
       contents: write
       pull-requests: read
@@ -239,7 +250,7 @@ jobs:
           }
 
           # Next tag of template $1 for commit $2. `{X}.{Y}.{Z}`: the latest release with the strongest bump in the titles
-          # of the commits after it (`!` -> X, `feat` -> Y, other -> Z). Dates: the commit date in UTC. `{N}`: one more
+          # of the commits after it (`!` -> X, `feat` -> Y, other -> Z), no bump if the release is on commit $2. Dates: the commit date in UTC. `{N}`: one more
           # than the latest tag with the same other values, from 1.
           next_tag() {
             local lits keys release key subjects partial re tag n=0
@@ -257,7 +268,11 @@ jobs:
                 done
               fi
               subjects=$(git log --format=%s "$(range "$release" "$2")" "${pathspec[@]}")
-              if grep -qE '^[a-z]+(\([^)]*\))?!:' <<< "$subjects"; then
+              # A variant (`fabric@{X}.{Y}.{Z}`) of a commit that already has its release takes the same version.
+              if [ -n "$release" ] && [ "$1" != "$release_tag" ] &&
+                [ "$(git rev-parse "$release^{commit}")" = "$(git rev-parse "$2^{commit}")" ]; then
+                :
+              elif grep -qE '^[a-z]+(\([^)]*\))?!:' <<< "$subjects"; then
                 values[X]=$((values[X] + 1)) values[Y]=0 values[Z]=0
               elif grep -qE '^feat(\([^)]*\))?:' <<< "$subjects"; then
                 values[Y]=$((values[Y] + 1)) values[Z]=0

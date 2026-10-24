@@ -37,6 +37,8 @@ Runs the lint and test commands of the caller. Permissions: `contents: read`.
 
 | Input | Default | |
 | --- | --- | --- |
+| `runs-on` | `ubuntu-latest` | Runner of the job, e.g. `self-hosted` |
+| `services` | `{}` | Service containers (a database…), as the JSON of `jobs.<id>.services` |
 | `pre-run` | | Commands that prepare the tests, before `run` (bash, one per line) |
 | `run` | required | Commands (bash, one per line) |
 | `env` | | Environment variables for the whole job, one `NAME=value` per line |
@@ -108,6 +110,10 @@ is safe: tags and releases already created are checked and kept.
 
 A template must give a different tag to each commit: with only dates, add a `{N}`.
 
+A variant of a release, a template other than `release-tag` like `fabric-26.3@{X}.{Y}.{Z}`, on a commit that already
+has its release takes the same version: a job creates `v1.5.0`, the next ones `fabric-26.3@1.5.0`, `neoforge-26.3@1.5.0`.
+A variant added later starts from the version of the mod, not from `0.0.1`.
+
 #### GitHub releases
 
 `github-release: release` creates a release for each tag, `none` only tags. With `prerelease` there is at most one
@@ -132,6 +138,14 @@ Permissions: `contents: write`, `pull-requests: read`, `actions: read`.
 | `artifact` | | Artifact whose files are attached to the GitHub release (without `from`) |
 | `assets-notes` | | Text added to the release notes when there are attached files |
 | `cliff-config` | | git-cliff config of the release notes (empty for the bundled one) |
+
+| Output | |
+| --- | --- |
+| `tag` | Tag of the run, empty when the branch has moved past the commit |
+| `sha` | Commit of the tag |
+
+Tags created with the `GITHUB_TOKEN` do not start other workflows (`on: push: tags`): a deploy is a job after the
+release, with `needs` and `needs.<job>.outputs.tag`.
 
 ## Example
 
@@ -300,23 +314,62 @@ jobs:
       from-workflow: staging.yml
 ```
 
-A Minecraft mod built for several loaders from the same commit, one release per loader on each push:
+A single release for the whole repository, by hand, without staging:
 
 ```yaml
+on:
+  workflow_dispatch:
+
 jobs:
   release:
     name: Release
+    permissions:
+      contents: write
+      pull-requests: read
+      actions: read
+    uses: Berack96/workflows/.github/workflows/release.yml@<sha> # vX.Y.Z
+
+  deploy:
+    name: Deploy
+    needs: release
+    if: needs.release.outputs.tag != ''
+    runs-on: self-hosted
+    steps:
+      - run: echo "deploy ${{ needs.release.outputs.tag }}"
+```
+
+A Minecraft mod built for several loaders from the same commit: the version of the mod, then one release per loader
+with the same version:
+
+```yaml
+jobs:
+  version:
+    name: Version
     needs: build
-    strategy:
-      matrix:
-        loader: [forge-1.21, fabric-26.3]
     permissions:
       contents: write
       pull-requests: read
       actions: read
     uses: Berack96/workflows/.github/workflows/release.yml@<sha> # vX.Y.Z
     with:
-      tag: v{X}.{Y}.{Z}+${{ matrix.loader }}
+      # Only the tag: the releases are the ones of the loaders.
+      release-tag: v{X}.{Y}.{Z}
+      github-release: none
+
+  release:
+    name: Release
+    needs: version
+    strategy:
+      matrix:
+        loader: [fabric-26.3, neoforge-26.3]
+    permissions:
+      contents: write
+      pull-requests: read
+      actions: read
+    uses: Berack96/workflows/.github/workflows/release.yml@<sha> # vX.Y.Z
+    with:
+      tag: ${{ matrix.loader }}@{X}.{Y}.{Z}
+      release-tag: v{X}.{Y}.{Z}
       artifact: ${{ matrix.loader }}
 ```
 
