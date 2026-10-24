@@ -1,11 +1,11 @@
-# By hand: release `vX.Y.Z` of a release candidate of this repository.
+# By hand: release `vX.Y.Z` of a staging tag of this repository.
 name: Production
 
 on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Release candidate to release (empty for the latest)
+        description: Staging tag to release (empty for the latest)
         required: false
 
 permissions: {}
@@ -19,6 +19,6 @@ jobs:
       actions: read
     uses: ./.github/workflows/release.yml
     with:
-      from: v{X}.{Y}.{Z}-rc.{N}
+      from: v{YYYY}.{MM}-build.{NNN}
       from-tag: ${{ inputs.tag }}
       from-workflow: ci-staging.yml

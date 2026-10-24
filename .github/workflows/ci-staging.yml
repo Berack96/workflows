@@ -1,4 +1,4 @@
-# Push on main: release candidate `vX.Y.Z-rc.N` and pre-release of this repository.
+# Push on main: staging tag `vYYYY.MM-build.NNN` and pre-release of this repository.
 name: Staging
 
 on:
@@ -18,6 +18,6 @@ jobs:
       actions: read
     uses: ./.github/workflows/release.yml
     with:
-      tag: v{X}.{Y}.{Z}-rc.{N}
+      tag: v{YYYY}.{MM}-build.{NNN}
       release-tag: v{X}.{Y}.{Z}
       github-release: prerelease
