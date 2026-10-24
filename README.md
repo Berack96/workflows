@@ -117,9 +117,12 @@ A variant added later starts from the version of the mod, not from `0.0.1`.
 #### GitHub releases
 
 `github-release: release` creates a release for each tag, `none` only tags. With `prerelease` there is at most one
-pre-release per environment: the one of its latest tag after the latest release (`release-tag`), updated by its runs
-and by the ones promoting from it; its older pre-releases are deleted. In a chain like alpha → beta → release, the
-alpha pre-release left behind by a release goes away at the next alpha run.
+pre-release per environment: the one of its latest tag after the latest release (`release-tag`). Each new tag gets a
+new pre-release and the older ones are deleted; the runs promoting from it update only its notes. In a chain like
+alpha → beta → release, the alpha pre-release left behind by a release goes away at the next alpha run.
+
+Immutable releases work: files are attached only when a release is created, later only title and notes change. A
+re-run that finds the release already created does not add its files.
 
 The release notes list the commit titles since the latest release (git-cliff, conventional commits), only of `path`
 in a monorepo.
@@ -134,7 +137,7 @@ Permissions: `contents: write`, `pull-requests: read`, `actions: read`.
 | `from-tag` | | Tag to promote (empty for the latest of `from` on the branch) |
 | `from-workflow` | | Workflow file that must have passed on the commit of the tag to promote |
 | `github-release` | `release` | `release`, `prerelease` or `none` |
-| `path` | | Directory of the project in a monorepo: only its commits count for `{X}.{Y}.{Z}` and the notes |
+| `path` | | Directories of the project in a monorepo, one per line: its own and the ones it depends on. Only their commits count for `{X}.{Y}.{Z}` and the notes, and without `from` no tag is created if none came after the latest tag of the environment |
 | `artifact` | | Artifact whose files are attached to the GitHub release (without `from`) |
 | `assets-notes` | | Text added to the release notes when there are attached files |
 | `cliff-config` | | git-cliff config of the release notes (empty for the bundled one) |
@@ -373,20 +376,32 @@ jobs:
       artifact: ${{ matrix.loader }}
 ```
 
-A monorepo, one workflow per project with `on.push.paths` on its directory:
+A monorepo, one environment per project: each one with its directories and the ones it depends on. A change in
+`common` gives a staging tag to both loaders, a change in `fabric` only to Fabric:
 
 ```yaml
+on:
+  push:
+    branches: [main]
+
 jobs:
-  release:
-    name: Release
+  staging:
+    name: Pre-release
+    strategy:
+      matrix:
+        loader: [fabric, neoforge]
     permissions:
       contents: write
       pull-requests: read
       actions: read
     uses: Berack96/workflows/.github/workflows/release.yml@<sha> # vX.Y.Z
     with:
-      tag: web@{X}.{Y}.{Z}
-      path: projects/web
+      tag: ${{ matrix.loader }}-staging-{YYYY}.{MM}-build.{NNN}
+      release-tag: ${{ matrix.loader }}@{X}.{Y}.{Z}
+      github-release: prerelease
+      path: |
+        ${{ matrix.loader }}
+        common
 ```
 
 ## This repository
