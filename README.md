@@ -157,6 +157,7 @@ Permissions: `contents: write`, `pull-requests: read`, `actions: read`.
 | `cliff-config` | | git-cliff config of the release notes, a path in the repository; empty for the bundled one |
 | `dry-run` | `false` | Only compute the tag, in the `tag` output, without creating tags and releases: for a build that needs its version |
 | `expect-tag` | | Tag the run must create, the one of the dry run: it fails if another tag came in between |
+| `prune` | `false` | With `from`, delete the tags of `from` before the promoted one, once released ([details](#pruning-staging-tags)) |
 
 | Output | |
 | --- | --- |
@@ -227,6 +228,18 @@ alpha → beta → release, the alpha pre-release left behind by a release goes 
 Files are attached only when a release is created, later only title and notes change: immutable releases work. A
 re-run that finds the release already created does not add its files. A promoted tag gets the files of its
 pre-release, if it is still there: only the latest tag of an environment has one.
+
+### Pruning staging tags
+
+Staging tags are a temporary history: once one is released, the ones before it are not needed anymore. With
+`prune: true` a promotion deletes the tags of `from` reachable from the promoted commit, except:
+
+- the promoted one, and the ones after it or on other branches;
+- the ones of the current period, with the same `{YYYY}`, `{YY}`, `{MM}` as today: `{N}` goes on from them, and
+  deleting them would give their names again. Without dates in the template, the newest one stays, for the same reason;
+- the ones that still have a GitHub release.
+
+### Release notes
 
 The release notes list the titles of the commits since the latest release, of `path` only in a monorepo (git-cliff,
 conventional commits): Features (`feat`), Fixes (`fix`) and the others in a collapsed section, with the scope in bold,
