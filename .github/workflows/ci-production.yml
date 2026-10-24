@@ -19,6 +19,6 @@ jobs:
       actions: read
     uses: ./.github/workflows/release.yml
     with:
-      from: staging-{YYYY}.{MM}-build.{NNN}
+      from: v{YYYY}.{MM}-staging.{NNN}
       from-tag: ${{ inputs.tag }}
       from-workflow: ci-staging.yml
