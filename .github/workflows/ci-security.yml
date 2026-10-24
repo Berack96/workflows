@@ -23,12 +23,12 @@ jobs:
       pull-requests: write
     uses: ./.github/workflows/security.yml
 
-  issue:
-    name: Issue
+  # Only on main: a draft PR with the updates of the vulnerable packages, or the report of the failure.
+  fix:
+    name: Fix
     needs: security
     if: failure() && github.event_name == 'schedule'
     permissions:
-      issues: write
-    uses: ./.github/workflows/failure-issue.yml
-    with:
-      title: Weekly security checks failed
+      contents: write
+      pull-requests: write
+    uses: ./.github/workflows/security-fix.yml
