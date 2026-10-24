@@ -177,6 +177,7 @@ deploy is a job before or after the release, with `needs` and its outputs.
 | Template | Tags |
 | --- | --- |
 | `v{X}.{Y}.{Z}` (default) | `v1.6.3` |
+| `v{X}.{Y}.{Z}-rc.{N}` | `v1.7.0-rc.2` |
 | `staging-{YYYY}.{MM}-build.{NNN}` | `staging-2026.05-build.007` |
 | `v{X}.{Y}.{Z}-beta.{N}` | `v1.7.0-beta.2` |
 | `v{YY}.{MM}.{N}` | `v26.05.3` |
@@ -185,6 +186,10 @@ deploy is a job before or after the release, with `needs` and its outputs.
 | `fabric-26.3@{X}.{Y}.{Z}` | `fabric-26.3@1.6.3` |
 
 A template must give a different tag to each commit: with only dates, add a `{N}`.
+
+GitHub lists the releases by the name of their tags read as versions, not by date: a pre-release `staging-…` goes
+below every `v1.2.3`, even when it is the newest. With a template like `v{X}.{Y}.{Z}-rc.{N}`, the version of the next
+release, a pre-release stays above the latest release.
 
 **Variants.** A template other than `release-tag`, like `fabric-26.3@{X}.{Y}.{Z}` with `release-tag: v{X}.{Y}.{Z}`,
 on a commit that already has its release takes the same version: a job creates `v1.5.0`, the next ones
@@ -364,7 +369,7 @@ jobs:
       actions: read
     uses: Berack96/workflows/.github/workflows/release.yml@<sha> # vX.Y.Z
     with:
-      tag: staging-{YY}.{MM}-build.{NNN}
+      tag: v{X}.{Y}.{Z}-rc.{N}
       release-tag: v{X}.{Y}.{Z}
       github-release: prerelease
       artifact: dist
@@ -380,7 +385,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Staging tag to release (empty for the latest)
+        description: Release candidate to release (empty for the latest)
         required: false
 
 permissions: {}
@@ -394,7 +399,7 @@ jobs:
       actions: read
     uses: Berack96/workflows/.github/workflows/release.yml@<sha> # vX.Y.Z
     with:
-      from: staging-{YY}.{MM}-build.{NNN}
+      from: v{X}.{Y}.{Z}-rc.{N}
       from-tag: ${{ inputs.tag }}
       from-workflow: staging.yml
 ```
@@ -575,4 +580,4 @@ jobs:
 ## This repository
 
 The `ci-*.yml` workflows run the workflows above on this repository itself: PR title, security checks (on PRs, and
-weekly with the fixes), staging tags on `main` and releases `vX.Y.Z` by hand.
+weekly with the fixes), release candidates `vX.Y.Z-rc.N` on `main` and releases `vX.Y.Z` by hand.
