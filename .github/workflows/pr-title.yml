@@ -1,0 +1,27 @@
+# PR title format: it becomes the subject of the squash commit and decides the next version.
+name: PR title
+
+on:
+  workflow_call:
+    inputs:
+      pattern:
+        description: Bash regex the title must match
+        type: string
+        default: '^(feat|fix|perf|refactor|docs|test|build|ci|style|revert|chore)(\([^)]+\))?!?: .+'
+
+permissions: {}
+
+jobs:
+  title:
+    name: Title
+    runs-on: ubuntu-latest
+    steps:
+      # The title goes through `env:`, never interpolated in the script.
+      - env:
+          TITLE: ${{ github.event.pull_request.title }}
+          PATTERN: ${{ inputs.pattern }}
+        run: |
+          if [[ ! "$TITLE" =~ $PATTERN ]]; then
+            echo "::error::The PR title does not match $PATTERN"
+            exit 1
+          fi

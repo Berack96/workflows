@@ -1,0 +1,15 @@
+# Title of the PRs of this repository. Apart from the other checks: editing title or description (`edited`) re-runs
+# only this one.
+name: Title
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened, ready_for_review]
+
+permissions: {}
+
+jobs:
+  title:
+    name: Title
+    if: ${{ !github.event.pull_request.draft }}
+    uses: ./.github/workflows/pr-title.yml

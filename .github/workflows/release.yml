@@ -1,0 +1,701 @@
+# Tags and GitHub releases of one environment, named by the template of its tags. Without `from` it tags the commit of
+# the run (on a push, or by hand on the head of the branch); with `from` it promotes a tag of another environment, on
+# the same commit and without rebuilding, with the files of its GitHub release.
+name: Release
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: Template of the tags this run creates (placeholders in the README)
+        type: string
+        default: v{X}.{Y}.{Z}
+      release-tag:
+        description: Template of the release tags, base of `{X}.{Y}.{Z}` and of the notes (empty when this run creates them)
+        type: string
+        default: ""
+      from:
+        description: Template of the tags to promote (empty to tag the commit of the run)
+        type: string
+        default: ""
+      from-tag:
+        description: Tag to promote (empty for the latest of `from` on the branch)
+        type: string
+        default: ""
+      from-workflow:
+        description: Workflow file that must have passed on the commit of the tag to promote (empty to skip the check)
+        type: string
+        default: ""
+      github-release:
+        description: "`release`, `prerelease` (a single one, on the latest tag after the latest release) or `none`"
+        type: string
+        default: release
+      path:
+        description: Directories and files of the project in a monorepo, one per line, the only ones whose commits count for the tags, `{X}.{Y}.{Z}` and the notes
+        type: string
+        default: ""
+      deps:
+        description: "`cargo`, `gradle`, `node` or `uv`: adds to `path` the workspace packages its projects depend on and the shared build files"
+        type: string
+        default: ""
+      deps-root:
+        description: Directory of the workspace that `deps` reads
+        type: string
+        default: "."
+      paths-command:
+        description: Command (bash) whose output, one per line, is added to `path`
+        type: string
+        default: ""
+      artifact:
+        description: Artifacts whose files are attached to the GitHub release (without `from`), a name or a glob like `build-*`
+        type: string
+        default: ""
+      assets-notes:
+        description: Text added to the release notes when there are attached files
+        type: string
+        default: ""
+      cliff-config:
+        description: git-cliff config of the release notes (empty for the bundled one)
+        type: string
+        default: ""
+      dry-run:
+        description: Only compute the tag, in the `tag` output, without creating tags and releases (for a build that needs its version)
+        type: boolean
+        default: false
+      expect-tag:
+        description: Tag this run must create, from a previous `dry-run` (empty for any)
+        type: string
+        default: ""
+
+    outputs:
+      tag:
+        description: Tag of this run, empty if there is none (the branch has moved past the commit, or nothing changed in `path`)
+        value: ${{ jobs.release.outputs.tag }}
+      sha:
+        description: Commit of the tag
+        value: ${{ jobs.release.outputs.sha }}
+
+permissions: {}
+
+jobs:
+  release:
+    name: Release
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.target.outputs.tag }}
+      sha: ${{ steps.target.outputs.sha }}
+    permissions:
+      contents: write
+      pull-requests: read
+      actions: read
+    # One queue per environment: a pending run gives way to the next one, other environments do not stop it.
+    # A dry run creates nothing: apart, so that it does not take the place of a release in the queue.
+    concurrency:
+      group: release-${{ inputs.tag }}${{ inputs.dry-run && '-dry-run' || '' }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      GH_TOKEN: ${{ github.token }}
+      # For git-cliff: authors and pull requests in the release notes.
+      GITHUB_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      BRANCH: ${{ github.ref_name }}
+      TAG: ${{ inputs.tag }}
+      RELEASE_TAG: ${{ inputs.release-tag }}
+      FROM: ${{ inputs.from }}
+      GITHUB_RELEASE: ${{ inputs.github-release }}
+      PROJECT_PATH: ${{ inputs.path }}
+      ASSETS_NOTES: ${{ inputs.assets-notes }}
+      CLIFF_CONFIG: ${{ inputs.cliff-config }}
+      DEPS: ${{ inputs.deps }}
+      DEPS_ROOT: ${{ inputs.deps-root }}
+      PATHS_COMMAND: ${{ inputs.paths-command }}
+    steps:
+      # Private repositories have no environment reviewers: only an admin of the repository runs it by hand.
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          ACTOR: ${{ github.triggering_actor }}
+        run: |
+          permission=$(gh api "repos/$GH_REPO/collaborators/$ACTOR/permission" --jq .permission)
+          [ "$permission" = admin ] || { echo "::error::$ACTOR is not an admin of the repository"; exit 1; }
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      # git-cliff from the official release, with fixed version and sha256 (the `digest` of the asset on GitHub), its
+      # bundled config and the helpers of the next steps.
+      - name: Setup
+        env:
+          VERSION: 2.14.2
+          SHA256: 24f397c733add5390fdceee3a2088588ab0d5f944ce00d34cb7029b888cf2db4
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/git-cliff.tar.gz" \
+            "https://github.com/orhun/git-cliff/releases/download/v$VERSION/git-cliff-$VERSION-x86_64-unknown-linux-gnu.tar.gz"
+          echo "$SHA256  $RUNNER_TEMP/git-cliff.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/git-cliff.tar.gz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/git-cliff-$VERSION" >> "$GITHUB_PATH"
+
+          cat > "$RUNNER_TEMP/cliff.toml" << 'EOF'
+          [changelog]
+          header = ""
+          body = """
+          {%- for group, commits in commits | group_by(attribute="group") %}
+          {%- set name = group | striptags | trim %}
+          {% if name == "Other" %}
+          <details><summary>Other ({{ commits | length }})</summary>
+          {% else %}
+          ### {{ name }}
+          {%- endif %}
+          {% for commit in commits %}
+          - {% if commit.scope %}**{{ commit.scope }}**: {% endif %}{{ commit.message | split(pat="\n") | first | upper_first }}
+          {%- endfor %}
+          {% if name == "Other" %}
+          </details>
+          {% endif %}
+          {%- endfor %}
+          {%- if previous.version %}
+
+          Full changelog: [{{ previous.version }}...{{ version }}](https://github.com/{{ remote.github.owner }}/{{ remote.github.repo }}/compare/{{ previous.version }}...{{ version }})
+          {%- endif %}
+          {%- if github.contributors | length > 0 %}
+
+          <sub>Authors: {% for contributor in github.contributors %}@{{ contributor.username }}{% if not loop.last %}, {% endif %}{% endfor %}</sub>
+          {%- endif %}
+          """
+          trim = true
+
+          [git]
+          conventional_commits = true
+          filter_unconventional = false
+          commit_parsers = [
+            { message = '^feat(\(.*\))?!?:', group = "<!-- 0 -->Features" },
+            { message = '^fix(\(.*\))?!?:', group = "<!-- 1 -->Fixes" },
+            # Titles that are not conventional end up in "Other" too.
+            { message = ".*", group = "<!-- 2 -->Other" },
+          ]
+          EOF
+
+          cat > "$RUNNER_TEMP/release.sh" << 'EOF'
+          # A failure inside `$(...)` stops the step, as everywhere else.
+          shopt -s inherit_errexit
+          release_tag=${RELEASE_TAG:-$TAG}
+          cliff_config=${CLIFF_CONFIG:-$RUNNER_TEMP/cliff.toml}
+          # The directories and files of the project, from the Setup step.
+          mapfile -t paths < "$RUNNER_TEMP/paths.txt"
+          pathspec=()
+          if [ "${#paths[@]}" -gt 0 ]; then
+            pathspec=(-- "${paths[@]}")
+          fi
+
+          # Splits template $1 into `lits`, the literal parts, and `keys`, the placeholders between them.
+          parse() {
+            local t=$1 valid='^([^{}]*\{(X|Y|Z|YYYY|YY|MM|N+)\})*[^{}]*$' split='^([^{]*)\{([^}]*)\}(.*)$'
+            [[ $t =~ $valid ]] || { echo "::error::invalid tag template $1" >&2; return 1; }
+            lits=()
+            keys=()
+            while [[ $t =~ $split ]]; do
+              lits+=("${BASH_REMATCH[1]}")
+              keys+=("${BASH_REMATCH[2]}")
+              t=${BASH_REMATCH[3]}
+            done
+            lits+=("$t")
+          }
+
+          # Glob of the tags of template $1.
+          glob() {
+            local lits keys i out
+            parse "$1"
+            out=${lits[0]}
+            for i in "${!keys[@]}"; do
+              out+="*${lits[i + 1]}"
+            done
+            echo "$out"
+          }
+
+          # Regex of the tags of template $1, with a group for each placeholder.
+          regex() {
+            local lits keys i out
+            parse "$1"
+            out="^$(sed 's/[][\.*^$+?(){}|]/\\&/g' <<< "${lits[0]}")"
+            for i in "${!keys[@]}"; do
+              out+="([0-9]+)$(sed 's/[][\.*^$+?(){}|]/\\&/g' <<< "${lits[i + 1]}")"
+            done
+            echo "$out\$"
+          }
+
+          # Template $1 with the placeholders that have a value in `values`, padded to their length, the others kept.
+          render() {
+            local lits keys i key out
+            parse "$1"
+            out=${lits[0]}
+            for i in "${!keys[@]}"; do
+              key=${keys[i]}
+              if [ -n "${values[$key]+set}" ]; then
+                out+=$(printf '%0*d' "${#key}" "$((10#${values[$key]}))")
+              else
+                out+="{$key}"
+              fi
+              out+=${lits[i + 1]}
+            done
+            echo "$out"
+          }
+
+          # Latest tag (highest version) of template $1 reachable from commit $2, empty if there is none.
+          last_tag() {
+            local re
+            re=$(regex "$1")
+            { git tag --merged "$2" --list "$(glob "$1")" --sort=-v:refname 2> /dev/null || true; } |
+              grep -E -m 1 "$re" || true
+          }
+
+          # Tag of template $1 on commit $2, empty if there is none.
+          tag_at() {
+            local re
+            re=$(regex "$1")
+            git tag --points-at "$2" --list "$(glob "$1")" | grep -E -m 1 "$re" || true
+          }
+
+          # The commits after tag $1 (all, if empty) up to $2.
+          range() {
+            echo "${1:+$1..}$2"
+          }
+
+          # Value of placeholder $3 in tag $2 of template $1.
+          field() {
+            local lits keys i re match
+            re=$(regex "$1")
+            [[ $2 =~ $re ]]
+            match=("${BASH_REMATCH[@]}")
+            parse "$1"
+            for i in "${!keys[@]}"; do
+              if [ "${keys[i]}" = "$3" ]; then
+                echo "$((10#${match[i + 1]}))"
+              fi
+            done
+          }
+
+          # Next tag of template $1 for commit $2. `{X}.{Y}.{Z}`: the latest release with the strongest bump in the titles
+          # of the commits after it (`!` -> X, `feat` -> Y, other -> Z), no bump if the release is on commit $2. Dates: the commit date in UTC. `{N}`: one more
+          # than the latest tag with the same other values, from 1.
+          next_tag() {
+            local lits keys release key subjects partial re tag n=0
+            local -A values
+            parse "$1"
+            values[YYYY]=$(TZ=UTC git show -s --date=format-local:%Y --format=%cd "$2")
+            values[YY]=${values[YYYY]:2}
+            values[MM]=$(TZ=UTC git show -s --date=format-local:%m --format=%cd "$2")
+            if [[ $1 == *\{[XYZ]\}* ]]; then
+              values[X]=0 values[Y]=0 values[Z]=0
+              release=$(last_tag "$release_tag" "$2")
+              if [ -n "$release" ]; then
+                for key in X Y Z; do
+                  values[$key]=$(field "$release_tag" "$release" "$key")
+                done
+              fi
+              subjects=$(git log --format=%s "$(range "$release" "$2")" "${pathspec[@]}")
+              # A variant (`fabric@{X}.{Y}.{Z}`) of a commit that already has its release takes the same version.
+              if [ -n "$release" ] && [ "$1" != "$release_tag" ] &&
+                [ "$(git rev-parse "$release^{commit}")" = "$(git rev-parse "$2^{commit}")" ]; then
+                :
+              elif grep -qE '^[a-z]+(\([^)]*\))?!:' <<< "$subjects"; then
+                values[X]=$((values[X] + 1)) values[Y]=0 values[Z]=0
+              elif grep -qE '^feat(\([^)]*\))?:' <<< "$subjects"; then
+                values[Y]=$((values[Y] + 1)) values[Z]=0
+              else
+                values[Z]=$((values[Z] + 1))
+              fi
+            fi
+            for key in "${keys[@]}"; do
+              if [[ $key == N* ]]; then
+                partial=$(render "$1")
+                re=$(regex "$partial")
+                while read -r tag; do
+                  if [[ $tag =~ $re ]] && ((10#${BASH_REMATCH[1]} > n)); then
+                    n=$((10#${BASH_REMATCH[1]}))
+                  fi
+                done < <(git tag --list "$(glob "$partial")")
+                values[$key]=$((n + 1))
+              fi
+            done
+            render "$1"
+          }
+
+          # Release notes of the commits after release $1 up to $2, for tag $3, with $4 attached files.
+          notes() {
+            local text path include=()
+            for path in "${paths[@]}"; do
+              if [ -d "$path" ]; then
+                include+=(--include-path "$path/**/*")
+              else
+                include+=(--include-path "$path")
+              fi
+            done
+            text=$(git-cliff --config "$cliff_config" --github-repo "$GH_REPO" --tag-pattern "$(regex "$release_tag")" \
+              "${include[@]}" "$(range "$1" "$2")" --tag "$3")
+            if [ "$4" -gt 0 ] && [ -n "$ASSETS_NOTES" ]; then
+              text+=$'\n\n'"$ASSETS_NOTES"
+            fi
+            echo "$text"
+          }
+
+          # A single pre-release of the tags of template $1: on the latest one after the latest release, with the notes
+          # since that release; none if there is no such tag. With $2 = true it is created if missing, with the files of
+          # `dist` if its commit is $SHA. Holds against other runs in parallel: reads tags and branch from the remote,
+          # updates the pre-release if it is already there and deletes the others only at the end. Works with immutable
+          # releases: the files are attached only when it is created, later only title and notes change.
+          prereleases() {
+            local release tag sha target="" attached notes old re files=()
+            release=$(last_tag "$release_tag" "origin/$BRANCH")
+            tag=$(last_tag "$1" "origin/$BRANCH")
+            if [ -n "$tag" ]; then
+              sha=$(git rev-parse "$tag^{commit}")
+              if [ "$(git rev-list --count "$(range "$release" "$sha")")" -gt 0 ]; then
+                target=$tag
+              fi
+            fi
+
+            if [ -n "$target" ]; then
+              attached=$(gh release view "$target" --json assets --jq '.assets | length' 2> /dev/null) || attached=""
+              if [ "$2" = true ] && [ "$sha" = "$SHA" ]; then
+                shopt -s nullglob
+                files=(dist/*)
+              fi
+              if [ -n "$attached" ] || [ "$2" = true ]; then
+                notes=$(notes "$release" "$sha" "$target" $((${#files[@]} + ${attached:-0})))
+                # If it is already there, or another run has just created it, only its notes are updated.
+                if [ -n "$attached" ] ||
+                  ! gh release create "$target" --prerelease --verify-tag --title "$target" --notes "$notes" "${files[@]}"; then
+                  gh release edit "$target" --prerelease --title "$target" --notes "$notes"
+                fi
+              fi
+            fi
+
+            re=$(regex "$1")
+            gh release list --limit 100 --json tagName,isPrerelease --jq '.[] | select(.isPrerelease) | .tagName' |
+              while read -r old; do
+                if [ "$old" != "$target" ] && [[ $old =~ $re ]]; then
+                  gh release delete "$old" --yes
+                fi
+              done
+          }
+          EOF
+
+          cat > "$RUNNER_TEMP/deps.py" << 'EOF'
+          """Directories of the workspace packages that the projects in argv[3:] depend on, with the projects themselves, plus the
+          shared build files of the workspace (manifests, lockfiles, toolchain): one per line. argv[1]: cargo, gradle, node or
+          uv; argv[2]: the directory of the workspace.
+          The files are read as text, without running the build tools: a dependency they cannot see is not found."""
+
+          import glob
+          import json
+          import os
+          import re
+          import sys
+          import tomllib
+          from pathlib import Path
+
+          SHARED = {
+              "cargo": ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "rust-toolchain", ".cargo"],
+              "gradle": [
+                  "settings.gradle",
+                  "settings.gradle.kts",
+                  "build.gradle",
+                  "build.gradle.kts",
+                  "gradle.properties",
+                  "gradle",
+                  "buildSrc",
+                  "build-logic",
+              ],
+              "node": [
+                  "package.json",
+                  "package-lock.json",
+                  "npm-shrinkwrap.json",
+                  "bun.lock",
+                  "bun.lockb",
+                  "yarn.lock",
+                  "pnpm-lock.yaml",
+                  "pnpm-workspace.yaml",
+              ],
+              "uv": ["pyproject.toml", "uv.lock", ".python-version"],
+          }
+
+
+          def toml(path: Path) -> dict:
+              return tomllib.loads(path.read_text(encoding="utf-8"))
+
+
+          def dirs(patterns: list[str], exclude: list[str] = ()) -> list[Path]:
+              """The directories of the glob `patterns`, without the ones of `exclude`."""
+              excluded = {Path(p) for e in exclude for p in glob.glob(e)}
+              found = {Path(d) for p in patterns for d in glob.glob(p) if Path(d).is_dir()}
+              return sorted(found - excluded)
+
+
+          def cargo() -> dict[Path, tuple[str, set[str]]]:
+              """Members of the Cargo workspace: name and names of their dependencies (renamed ones by their `package`)."""
+              workspace = toml(Path("Cargo.toml")).get("workspace", {})
+              found = {}
+              for folder in dirs(workspace.get("members", []), workspace.get("exclude", [])):
+                  if not (folder / "Cargo.toml").is_file():
+                      continue
+                  manifest = toml(folder / "Cargo.toml")
+                  tables = [manifest] + list(manifest.get("target", {}).values())
+                  deps = {
+                      (spec.get("package", name) if isinstance(spec, dict) else name)
+                      for table in tables
+                      for kind in ("dependencies", "dev-dependencies", "build-dependencies")
+                      for name, spec in table.get(kind, {}).items()
+                  }
+                  found[folder] = (manifest["package"]["name"], deps)
+              return found
+
+
+          def node() -> dict[Path, tuple[str, set[str]]]:
+              """Packages of the npm/bun/yarn workspaces (`workspaces` of package.json) or of pnpm-workspace.yaml."""
+              patterns = json.loads(Path("package.json").read_text(encoding="utf-8")).get("workspaces", [])
+              if isinstance(patterns, dict):
+                  patterns = patterns.get("packages", [])
+              if Path("pnpm-workspace.yaml").is_file():
+                  # shortcut: only the `- 'glob'` lines of the file, enough for the usual `packages:` list.
+                  lines = Path("pnpm-workspace.yaml").read_text(encoding="utf-8").splitlines()
+                  patterns += [m[1] for line in lines if (m := re.match(r"""^\s*-\s*['"]?([^'"#\s]+)""", line))]
+              found = {}
+              for folder in dirs([p for p in patterns if not p.startswith("!")], [p[1:] for p in patterns if p.startswith("!")]):
+                  if not (folder / "package.json").is_file():
+                      continue
+                  manifest = json.loads((folder / "package.json").read_text(encoding="utf-8"))
+                  kinds = ("dependencies", "devDependencies", "peerDependencies", "optionalDependencies")
+                  found[folder] = (manifest.get("name", ""), {name for kind in kinds for name in manifest.get(kind, {})})
+              return found
+
+
+          def normalize(name: str) -> str:
+              return re.sub(r"[-_.]+", "-", name).lower()
+
+
+          def uv() -> dict[Path, tuple[str, set[str]]]:
+              """Members of the uv workspace: dependencies, optional ones and dependency groups (the root is not a member)."""
+              workspace = toml(Path("pyproject.toml")).get("tool", {}).get("uv", {}).get("workspace", {})
+              found = {}
+              for folder in dirs(workspace.get("members", []), workspace.get("exclude", [])):
+                  if folder == Path(".") or not (folder / "pyproject.toml").is_file():
+                      continue
+                  manifest = toml(folder / "pyproject.toml")
+                  project = manifest.get("project", {})
+                  specs = list(project.get("dependencies", []))
+                  specs += [s for group in project.get("optional-dependencies", {}).values() for s in group]
+                  specs += [s for group in manifest.get("dependency-groups", {}).values() for s in group if isinstance(s, str)]
+                  deps = {normalize(m[1]) for s in specs if (m := re.match(r"\s*([A-Za-z0-9][A-Za-z0-9._-]*)", s))}
+                  found[folder] = (normalize(project.get("name", "")), deps)
+              return found
+
+
+          def gradle() -> dict[Path, tuple[str, set[str]]]:
+              """Projects of settings.gradle(.kts): the `project(":x")` and `projects.x` in their build files."""
+              settings = next((Path(f) for f in ("settings.gradle.kts", "settings.gradle") if Path(f).is_file()), None)
+              if settings is None:
+                  sys.exit("::error::no settings.gradle(.kts)")
+              text = settings.read_text(encoding="utf-8")
+              paths = [
+                  ":" + p.lstrip(":")
+                  for call in re.findall(r"\binclude\b\s*(\([^)]*\)|[^\n]*)", text)
+                  for p in re.findall(r"""["']([^"']+)["']""", call)
+              ]
+              folders = {p: Path(*p.strip(":").split(":")) for p in paths}
+              for path, folder in re.findall(
+                  r"""project\(\s*["'](:?[^"']+)["']\s*\)\.projectDir\s*=\s*(?:file\(\s*)?(?:File\([^,]*,\s*)?["']([^"']+)["']""", text
+              ):
+                  folders[":" + path.lstrip(":")] = Path(folder)
+              # Type-safe accessors: `:my-lib:core` is `projects.myLib.core`.
+              accessors = {
+                  ".".join(re.sub(r"[-_](\w)", lambda m: m[1].upper(), s) for s in p.strip(":").split(":")): p for p in folders
+              }
+              found = {}
+              for path, folder in folders.items():
+                  deps = set()
+                  for build in (folder / "build.gradle.kts", folder / "build.gradle"):
+                      if build.is_file():
+                          text = build.read_text(encoding="utf-8")
+                          deps |= {":" + p.lstrip(":") for p in re.findall(r"""project\(\s*(?:path\s*[:=]\s*)?["'](:[^"']*)["']""", text)}
+                          deps |= {accessors[a] for a in re.findall(r"\bprojects\.([\w.]+)", text) if a in accessors}
+                  found[folder] = (path, deps)
+              return found
+
+
+          def main() -> None:
+              # The paths of the repository, relative to the workspace while reading it.
+              kind, root = sys.argv[1], Path(sys.argv[2])
+              projects = [Path(os.path.relpath(p, root)) for p in sys.argv[3:]]
+              os.chdir(root)
+              packages = {"cargo": cargo, "gradle": gradle, "node": node, "uv": uv}[kind]()
+              by_name = {name: folder for folder, (name, _) in packages.items()}
+              todo, seen = list(projects), set()
+              for project in projects:
+                  if project not in packages:
+                      print(f"::warning::{project.as_posix()} is not a {kind} workspace package", file=sys.stderr)
+              while todo:
+                  folder = todo.pop()
+                  if folder in seen:
+                      continue
+                  seen.add(folder)
+                  todo += [by_name[d] for d in packages.get(folder, ("", set()))[1] if d in by_name]
+              print("\n".join(os.path.normpath(root / f) for f in sorted(seen) + [Path(f) for f in SHARED[kind]]))
+
+
+          if __name__ == "__main__":
+              main()
+          EOF
+
+          # The paths of the project: `path`, the dependencies of `deps` and the output of `paths-command`, without the
+          # token: the command comes from the repository, it does not need to write to it.
+          [[ $DEPS =~ ^(|cargo|gradle|node|uv)$ ]] || { echo "::error::unknown deps $DEPS"; exit 1; }
+          trim() { sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e 's|^\./||' -e 's|/$||' -e '/^$/d'; }
+          mapfile -t own < <(trim <<< "$PROJECT_PATH")
+          [ -z "$DEPS" ] || [ "${#own[@]}" -gt 0 ] || { echo "::error::deps needs the directories of the project in path"; exit 1; }
+          {
+            printf '%s\n' "${own[@]}"
+            if [ -n "$DEPS" ]; then
+              python3 -I "$RUNNER_TEMP/deps.py" "$DEPS" "$DEPS_ROOT" "${own[@]}"
+            fi
+            if [ -n "$PATHS_COMMAND" ]; then
+              env -u GH_TOKEN -u GITHUB_TOKEN bash -eo pipefail -c "$PATHS_COMMAND"
+            fi
+          } | trim | sort -u > "$RUNNER_TEMP/paths.txt"
+          if [ -s "$RUNNER_TEMP/paths.txt" ]; then
+            echo "Paths of the project:"
+            sed 's/^/  /' "$RUNNER_TEMP/paths.txt"
+          fi
+
+          source "$RUNNER_TEMP/release.sh"
+          [[ $GITHUB_RELEASE =~ ^(release|prerelease|none)$ ]] || { echo "::error::unknown github-release $GITHUB_RELEASE"; exit 1; }
+          [[ -n $RELEASE_TAG || $GITHUB_RELEASE == release ]] ||
+            { echo "::error::release-tag is needed when the tags of this run are not releases"; exit 1; }
+          parse "$TAG"
+          parse "$release_tag"
+          [ -z "$FROM" ] || parse "$FROM"
+          [[ $TAG != *\{[XYZ]\}* || $release_tag == *'{X}'*'{Y}'*'{Z}'* ]] ||
+            { echo "::error::{X}.{Y}.{Z} in $TAG needs {X}, {Y} and {Z} in $release_tag"; exit 1; }
+
+      # The commit to tag. Without `from`: the one of the run, unless the branch has moved past it (a re-run of an old
+      # push) or, with `path`, no commit of its paths came after the latest tag of this environment. With `from`: the
+      # one of a tag of `from` on the branch, after the latest tag of this environment and with a run of
+      # `from-workflow` passed up to this job, since anyone with write access can push a tag. A re-run finds its tag
+      # already on the commit, and keeps it.
+      - id: target
+        env:
+          FROM_TAG: ${{ inputs.from-tag }}
+          FROM_WORKFLOW: ${{ inputs.from-workflow }}
+          EXPECT_TAG: ${{ inputs.expect-tag }}
+        run: |
+          source "$RUNNER_TEMP/release.sh"
+          source=""
+          if [ -z "$FROM" ]; then
+            sha=$GITHUB_SHA
+            head=$(gh api "repos/$GH_REPO/git/ref/heads/$BRANCH" --jq .object.sha)
+            if [ "$head" != "$sha" ]; then
+              echo "$BRANCH has moved on ($head): no tag for $sha"
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            last=$(last_tag "$TAG" "$sha")
+            if [ "${#paths[@]}" -gt 0 ] && [ -n "$last" ] && [ -z "$(tag_at "$TAG" "$sha")" ] &&
+              [ -z "$(git log --format=%H "$(range "$last" "$sha")" "${pathspec[@]}")" ]; then
+              echo "No change in ${paths[*]} after $last: no tag for $sha"
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          else
+            source=${FROM_TAG:-$(last_tag "$FROM" HEAD)}
+            [ -n "$source" ] || { echo "::error::no tag $FROM on $BRANCH"; exit 1; }
+            [[ $source =~ $(regex "$FROM") ]] || { echo "::error::$source is not a tag $FROM"; exit 1; }
+            sha=$(git rev-parse --verify "refs/tags/$source^{commit}")
+            git merge-base --is-ancestor "$sha" HEAD || { echo "::error::$source is not on $BRANCH"; exit 1; }
+            if [ -n "$FROM_WORKFLOW" ]; then
+              passed=false
+              for run in $(gh api "repos/$GH_REPO/actions/workflows/$FROM_WORKFLOW/runs?head_sha=$sha&status=success" \
+                --jq '.workflow_runs[].id'); do
+                [ "$(gh api "repos/$GH_REPO/actions/runs/$run/jobs" \
+                  --jq '[.jobs[] | select(.name == "Release" or (.name | endswith(" / Release")))] | any(.conclusion == "success")')" = true ] &&
+                  passed=true
+              done
+              $passed || { echo "::error::$source: no run of $FROM_WORKFLOW passed up to its release"; exit 1; }
+            fi
+          fi
+
+          tag=$(tag_at "$TAG" "$sha")
+          if [ -z "$tag" ]; then
+            if [ -n "$FROM" ]; then
+              last=$(last_tag "$TAG" HEAD)
+              if [ -n "$last" ] && ! git merge-base --is-ancestor "$last" "$sha^"; then
+                echo "::error::$source is not after $last"
+                exit 1
+              fi
+            fi
+            tag=$(next_tag "$TAG" "$sha")
+          fi
+          echo "$sha: $tag"
+          # Another tag between the dry run and this one: the build would carry a version that is not the one of its tag.
+          [ -z "$EXPECT_TAG" ] || [ "$tag" = "$EXPECT_TAG" ] ||
+            { echo "::error::the tag is $tag, the build was made for $EXPECT_TAG"; exit 1; }
+          {
+            echo "source=$source"
+            echo "sha=$sha"
+            echo "tag=$tag"
+          } >> "$GITHUB_OUTPUT"
+
+      # All the artifacts of the glob in `dist`: files with the same name overwrite each other.
+      - if: steps.target.outputs.skip != 'true' && !inputs.dry-run && inputs.from == '' && inputs.github-release != 'none' && inputs.artifact != ''
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: ${{ inputs.artifact }}
+          merge-multiple: true
+          path: dist
+      # The files of the GitHub release of the promoted tag, if it is still there: a pre-release is only on the latest.
+      - if: steps.target.outputs.skip != 'true' && !inputs.dry-run && inputs.from != '' && inputs.github-release != 'none'
+        env:
+          SOURCE: ${{ steps.target.outputs.source }}
+        run: |
+          mkdir -p dist
+          gh release download "$SOURCE" --dir dist || echo "::warning::no GitHub release with files for $SOURCE"
+
+      # A re-run finds tag and release already created: the tag must be on this commit and the release created by this
+      # workflow, not by someone who prepared it before with their own files.
+      - if: steps.target.outputs.skip != 'true' && !inputs.dry-run
+        env:
+          SHA: ${{ steps.target.outputs.sha }}
+          TARGET: ${{ steps.target.outputs.tag }}
+        run: |
+          source "$RUNNER_TEMP/release.sh"
+          gh api "repos/$GH_REPO/git/refs" -f ref="refs/tags/$TARGET" -f sha="$SHA" ||
+            [ "$(gh api "repos/$GH_REPO/git/ref/tags/$TARGET" --jq .object.sha)" = "$SHA" ]
+          git tag -f "$TARGET" "$SHA"
+          if [ "$GITHUB_RELEASE" = release ]; then
+            shopt -s nullglob
+            files=(dist/*)
+            notes=$(notes "$(last_tag "$release_tag" "$SHA^")" "$SHA" "$TARGET" "${#files[@]}")
+            if author=$(gh release view "$TARGET" --json author --jq .author.login 2> /dev/null); then
+              [ "$author" = "github-actions[bot]" ] ||
+                { echo "::error::the release $TARGET was created by $author, not by this workflow"; exit 1; }
+            else
+              gh release create "$TARGET" --verify-tag --title "$TARGET" --notes "$notes" "${files[@]}"
+            fi
+          fi
+
+      # The pre-release of this environment, and the one of the promoted environment, which moves past the release.
+      - name: Pre-release
+        if: steps.target.outputs.skip != 'true' && !inputs.dry-run && (inputs.github-release == 'prerelease' || inputs.from != '')
+        env:
+          SHA: ${{ steps.target.outputs.sha }}
+        run: |
+          source "$RUNNER_TEMP/release.sh"
+          # Tags and commits created by other runs after the checkout (which does not keep the credentials).
+          auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" \
+            fetch --quiet --force --tags origin "$BRANCH"
+          if [ "$GITHUB_RELEASE" = prerelease ]; then
+            prereleases "$TAG" true
+          fi
+          if [ -n "$FROM" ]; then
+            prereleases "$FROM" false
+          fi

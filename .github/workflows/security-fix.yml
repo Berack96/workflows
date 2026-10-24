@@ -1,0 +1,169 @@
+# After failed security checks (`needs` on `security.yml`): a draft PR with a single commit on top of the branch of the
+# run. The commit updates the vulnerable packages found by OSV-Scanner in the lockfiles it can update, then runs
+# `update-command`; it is empty if nothing changed, and the PR only reports the failure. Always the same branch: the
+# draft PR is updated, never a second one. A PR already marked ready for review is left alone: a push with the token of
+# the workflow would not re-run its CI.
+name: Security fix
+
+on:
+  workflow_call:
+    inputs:
+      branch:
+        description: Branch of the PR
+        type: string
+        default: fix/security
+      update-command:
+        description: Command (bash) run after the built-in updates, for the other ecosystems; `$VULNERABLE` is a file with a `lockfile name version ids` line per vulnerable package
+        type: string
+        default: ""
+      mise:
+        description: Install the tools of the repository's mise config, for `update-command`
+        type: boolean
+        default: false
+
+permissions: {}
+
+jobs:
+  fix:
+    name: Fix
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    concurrency:
+      group: security-fix-${{ inputs.branch }}
+    defaults:
+      run:
+        shell: bash
+    # The token only in the steps that need it: the updates run the scripts of the packages.
+    env:
+      GH_REPO: ${{ github.repository }}
+      BRANCH: ${{ inputs.branch }}
+      BASE: ${{ github.ref_name }}
+      # Tools of the updates, pinned: images by digest, the others by version (checked by mise).
+      OSV_SCANNER: ghcr.io/google/osv-scanner:v2.6.0@sha256:afd838850ac1a0fcc15ff4a041dc9ba11123c3f0d2666217a5f0fcf9222b55fa
+      UV: uv@0.13.5
+      BUN: bun@1.4.4
+      PNPM: pnpm@12.15.0
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          pr=$(gh pr list --head "$BRANCH" --state open --json number,isDraft --jq '.[0] // empty')
+          if [ -n "$pr" ]; then
+            echo "number=$(jq -r .number <<< "$pr")" >> "$GITHUB_OUTPUT"
+            if [ "$(jq -r .isDraft <<< "$pr")" = false ]; then
+              echo "::notice::PR #$(jq -r .number <<< "$pr") is ready for review: not updated"
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+      # mise pinned: version and sha256 of the linux-x64 binary (not of the archive). Without the tools of the
+      # repository unless asked: the built-in updates bring their own.
+      - if: steps.pr.outputs.skip != 'true'
+        uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
+        with:
+          version: 2026.10.9
+          sha256: 6ab6646b52b83f6bbd51c9d0d3ae54264ffa90efd1ac6d7c0ec5a86bbc6a0030
+          install: ${{ inputs.mise }}
+          cache: false
+      # The vulnerable packages of all the lockfiles (`.gitignore` is respected), one `lockfile name version ids` per
+      # line in file $1. Before and after the updates: the ones still there after are not fixed.
+      - if: steps.pr.outputs.skip != 'true'
+        run: |
+          cat > "$RUNNER_TEMP/scan.sh" << 'EOF'
+          status=0
+          docker run --rm --quiet -v "$PWD:/repo:ro" -w /repo "$OSV_SCANNER" \
+            scan source -r --format json . > "$RUNNER_TEMP/osv.json" || status=$?
+          # 0: nothing found, 1: vulnerabilities, 128: no packages; anything else is an error of the scanner.
+          case "$status" in 0 | 1 | 128) ;; *) exit "$status" ;; esac
+          jq -r '.results[]? | (.source.path | sub("^(/repo/|\\./)"; "")) as $lock | .packages[]? |
+            select((.vulnerabilities // []) | length > 0) |
+            [$lock, .package.name, .package.version, ([.vulnerabilities[].id] | join(","))] | join(" ")' \
+            "$RUNNER_TEMP/osv.json" | sort -u > "$1"
+          cat "$1"
+          EOF
+          bash -eo pipefail "$RUNNER_TEMP/scan.sh" "$RUNNER_TEMP/vulnerable.txt"
+      # Only the vulnerable packages, each in its own lockfile, as far as the version ranges of the manifests allow.
+      - if: steps.pr.outputs.skip != 'true'
+        run: |
+          while read -r lock name version _; do
+            case "$(basename "$lock")" in
+              Cargo.lock) update=(cargo update -p "$name@$version") ;;
+              package-lock.json) update=(npm update --package-lock-only --ignore-scripts "$name") ;;
+              bun.lock) update=(mise x "$BUN" -- bun update --ignore-scripts "$name") ;;
+              pnpm-lock.yaml) update=(mise x "$PNPM" -- pnpm update --lockfile-only --ignore-scripts "$name") ;;
+              uv.lock) update=(mise x "$UV" -- uv lock --upgrade-package "$name") ;;
+              *)
+                echo "$lock: no built-in update for $name"
+                continue
+                ;;
+            esac
+            # A failed update does not stop the others: the PR lists what is still vulnerable.
+            (cd "$(dirname "$lock")" && "${update[@]}") < /dev/null ||
+              echo "::warning::$lock: the update of $name failed"
+          done < "$RUNNER_TEMP/vulnerable.txt"
+      - if: steps.pr.outputs.skip != 'true' && inputs.update-command != ''
+        env:
+          RUN: ${{ inputs.update-command }}
+          VULNERABLE: ${{ runner.temp }}/vulnerable.txt
+        run: bash -eo pipefail -c "$RUN"
+      - if: steps.pr.outputs.skip != 'true'
+        run: bash -eo pipefail "$RUNNER_TEMP/scan.sh" "$RUNNER_TEMP/remaining.txt"
+      # A single commit on top of the branch of the run, pushed only if its content changed: a week without news does
+      # not touch the PR.
+      - if: steps.pr.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ steps.pr.outputs.number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          # Only the files of the repository: no `node_modules` or `target` from the updates.
+          git add --update
+          if git diff --cached --quiet; then
+            title="chore: security checks failed"
+          else
+            # The packages fixed by the updates: vulnerable before, not after.
+            names=$(cut -d' ' -f1,2 "$RUNNER_TEMP/remaining.txt" | grep -vxFf - <(cut -d' ' -f1,2 "$RUNNER_TEMP/vulnerable.txt") |
+              cut -d' ' -f2 | sort -u | paste -sd, | sed 's/,/, /g' || true)
+            title="fix(deps): update ${names:-vulnerable dependencies}"
+          fi
+          body="Security checks of \`$BASE\` failed: [run]($RUN_URL)."
+          if [ -s "$RUNNER_TEMP/vulnerable.txt" ]; then
+            body+=$'\n\n## Vulnerable packages\n\n| Lockfile | Package | Version | Advisories | Fixed |\n| --- | --- | --- | --- | --- |\n'
+            body+=$(while read -r lock name version ids; do
+              links=$(tr ',' '\n' <<< "$ids" | sed 's|.*|[&](https://osv.dev/vulnerability/&)|' | paste -sd' ')
+              fixed=✅
+              if grep -qF "$lock $name " "$RUNNER_TEMP/remaining.txt"; then
+                fixed=❌
+              fi
+              echo "| \`$lock\` | \`$name\` | $version | $links | $fixed |"
+            done < "$RUNNER_TEMP/vulnerable.txt")
+          fi
+          if git diff --cached --quiet; then
+            body+=$'\n\nNothing to update automatically: the commit is empty, the fixes go on the branch of this PR.'
+          else
+            body+=$'\n\nThe updates stay within the version ranges of the manifests: a package not fixed needs a new range.'
+          fi
+          # A PR body holds at most 65536 characters.
+          body=$(head -c 60000 <<< "$body")
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
+          git switch -C "$BRANCH"
+          git commit -q --allow-empty -m "$title"
+          auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
+          if git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" \
+            fetch --quiet origin "$BRANCH" 2> /dev/null && git diff --quiet FETCH_HEAD HEAD; then
+            echo "$BRANCH has this content already: no push"
+          else
+            git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" push --force origin "$BRANCH"
+          fi
+          if [ -n "$PR" ]; then
+            gh pr edit "$PR" --title "$title" --body "$body"
+          else
+            gh pr create --draft --base "$BASE" --head "$BRANCH" --title "$title" --body "$body"
+          fi

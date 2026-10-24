@@ -1,0 +1,23 @@
+# Push on main: staging tag and pre-release of this repository.
+name: Staging
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**/*.md"
+
+permissions: {}
+
+jobs:
+  release:
+    name: Pre-release
+    permissions:
+      contents: write
+      pull-requests: read
+      actions: read
+    uses: ./.github/workflows/release.yml
+    with:
+      tag: staging-{YYYY}.{MM}-build.{NNN}
+      release-tag: v{X}.{Y}.{Z}
+      github-release: prerelease

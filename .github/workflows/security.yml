@@ -1,0 +1,231 @@
+# Security checks. The dependency checks run only for the ecosystems whose lockfiles are in the repository.
+name: Security
+
+on:
+  workflow_call:
+    inputs:
+      secrets:
+        description: Secrets committed in the repository (gitleaks)
+        type: boolean
+        default: true
+      actions:
+        description: GitHub Actions workflows (zizmor)
+        type: boolean
+        default: true
+      iac:
+        description: Dockerfiles and other infrastructure as code (Trivy)
+        type: boolean
+        default: true
+      rust:
+        description: Rust dependencies, of each workspace or `Cargo.lock` (cargo-deny)
+        type: boolean
+        default: true
+      python:
+        description: Python dependencies, from `uv.lock`, `poetry.lock`, `Pipfile.lock`, `pdm.lock`, `requirements.txt` (OSV-Scanner)
+        type: boolean
+        default: true
+      javascript:
+        description: JavaScript and TypeScript dependencies, from `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `bun.lock` (OSV-Scanner)
+        type: boolean
+        default: true
+      java:
+        description: Java dependencies, from `pom.xml`, `gradle.lockfile` (OSV-Scanner)
+        type: boolean
+        default: true
+      go:
+        description: Go dependencies, from `go.mod` (OSV-Scanner)
+        type: boolean
+        default: true
+
+permissions: {}
+
+jobs:
+  security:
+    name: Scans
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # The report as a comment on the PR.
+      pull-requests: write
+    # `shell: bash` turns on pipefail: without it, `tee` would hide the result of the check.
+    defaults:
+      run:
+        shell: bash
+    # Images pinned by digest.
+    env:
+      OSV_SCANNER: ghcr.io/google/osv-scanner:v2.6.0@sha256:afd838850ac1a0fcc15ff4a041dc9ba11123c3f0d2666217a5f0fcf9222b55fa
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Only tracked files: build and dependency directories (`target`, `node_modules`, `.venv`) stay out.
+      - id: lockfiles
+        run: |
+          detect() {
+            if git ls-files | grep -E "(^|/)($2)\$" > "$RUNNER_TEMP/$1.files"; then
+              echo "$1=true" >> "$GITHUB_OUTPUT"
+            fi
+          }
+          # Rust: the outermost Cargo.toml of each tree (a workspace, or a crate on its own) and each directory with a
+          # Cargo.lock. A library without Cargo.lock is checked too, with one generated at the latest versions.
+          {
+            # `|| true`: no Cargo file is not an error.
+            { git ls-files | grep -E '(^|/)Cargo\.lock$' || true; } | xargs -r -n1 dirname
+            { git ls-files | grep -E '(^|/)Cargo\.toml$' || true; } | xargs -r -n1 dirname | sort |
+              awk '{ for (i = 1; i <= n; i++) if ($0 == k[i] || k[i] == "." || index($0, k[i] "/") == 1) next; k[++n] = $0; print }'
+          } | sort -u > "$RUNNER_TEMP/rust.files"
+          if [ -s "$RUNNER_TEMP/rust.files" ]; then
+            echo "rust=true" >> "$GITHUB_OUTPUT"
+          fi
+          detect python 'uv\.lock|poetry\.lock|Pipfile\.lock|pdm\.lock|requirements\.txt'
+          detect javascript 'package-lock\.json|yarn\.lock|pnpm-lock\.yaml|bun\.lock'
+          detect java 'pom\.xml|gradle\.lockfile'
+          detect go 'go\.mod'
+      # The checks do not stop at the first failure: all results go in the summary.
+      - id: gitleaks
+        if: inputs.secrets
+        continue-on-error: true
+        run: |
+          docker run --rm --quiet -v "$PWD:/repo:ro" \
+            ghcr.io/gitleaks/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f \
+            dir /repo --redact --no-banner --no-color -v 2>&1 | tee "$RUNNER_TEMP/gitleaks.txt"
+      - id: zizmor
+        if: inputs.actions
+        continue-on-error: true
+        run: |
+          docker run --rm --quiet -v "$PWD:/repo:ro" -w /repo -e GH_TOKEN \
+            ghcr.io/zizmorcore/zizmor:1.25.2@sha256:14ea7f5cc7c67933394a35b5a38a277397818d232602635edb2010b313afb110 \
+            -q --no-progress --min-severity=high --min-confidence=medium .github 2>&1 | tee "$RUNNER_TEMP/zizmor.txt"
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - id: trivy
+        if: inputs.iac
+        continue-on-error: true
+        run: |
+          docker run --rm --quiet -v "$PWD:/repo:ro" \
+            aquasec/trivy:0.71.0@sha256:016eae51fdcf989332a5404af7e8f625cd5d95d7c0907a221d080a996f556500 \
+            config -q --skip-version-check --severity HIGH,CRITICAL --exit-code 1 /repo 2>&1 |
+            tee "$RUNNER_TEMP/trivy.txt"
+      # cargo-deny from the official release, with fixed version and sha256 (the `digest` of the asset on GitHub).
+      - id: rust
+        if: inputs.rust && steps.lockfiles.outputs.rust
+        continue-on-error: true
+        env:
+          VERSION: 0.20.2
+          SHA256: 9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f
+        run: |
+          name="cargo-deny-$VERSION-x86_64-unknown-linux-musl"
+          curl -fsSL -o "$RUNNER_TEMP/cargo-deny.tar.gz" \
+            "https://github.com/EmbarkStudios/cargo-deny/releases/download/$VERSION/$name.tar.gz"
+          echo "$SHA256  $RUNNER_TEMP/cargo-deny.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/cargo-deny.tar.gz" -C "$RUNNER_TEMP"
+          mapfile -t files < "$RUNNER_TEMP/rust.files"
+          # Every workspace is checked, even after a failed one.
+          {
+            status=0
+            for dir in "${files[@]}"; do
+              if [ ! -f "$dir/Cargo.lock" ]; then
+                cargo generate-lockfile --manifest-path "$dir/Cargo.toml"
+              fi
+              # Without a config cargo-deny rejects every license: those are checked only with a `deny.toml`.
+              checks=(advisories bans sources)
+              if [ -f "$dir/deny.toml" ] || [ -f "$dir/.deny.toml" ] || [ -f "$dir/.cargo/deny.toml" ]; then
+                checks=()
+              fi
+              "$RUNNER_TEMP/$name/cargo-deny" --manifest-path "$dir/Cargo.toml" check "${checks[@]}" || status=1
+            done
+            exit "$status"
+          } 2>&1 | tee "$RUNNER_TEMP/rust.txt"
+      - id: python
+        if: inputs.python && steps.lockfiles.outputs.python
+        continue-on-error: true
+        run: |
+          mapfile -t files < "$RUNNER_TEMP/python.files"
+          docker run --rm --quiet -v "$PWD:/repo:ro" -w /repo "$OSV_SCANNER" \
+            scan source "${files[@]/#/--lockfile=}" 2>&1 | tee "$RUNNER_TEMP/python.txt"
+      - id: javascript
+        if: inputs.javascript && steps.lockfiles.outputs.javascript
+        continue-on-error: true
+        run: |
+          mapfile -t files < "$RUNNER_TEMP/javascript.files"
+          docker run --rm --quiet -v "$PWD:/repo:ro" -w /repo "$OSV_SCANNER" \
+            scan source "${files[@]/#/--lockfile=}" 2>&1 | tee "$RUNNER_TEMP/javascript.txt"
+      - id: java
+        if: inputs.java && steps.lockfiles.outputs.java
+        continue-on-error: true
+        run: |
+          mapfile -t files < "$RUNNER_TEMP/java.files"
+          docker run --rm --quiet -v "$PWD:/repo:ro" -w /repo "$OSV_SCANNER" \
+            scan source "${files[@]/#/--lockfile=}" 2>&1 | tee "$RUNNER_TEMP/java.txt"
+      - id: go
+        if: inputs.go && steps.lockfiles.outputs.go
+        continue-on-error: true
+        run: |
+          mapfile -t files < "$RUNNER_TEMP/go.files"
+          docker run --rm --quiet -v "$PWD:/repo:ro" -w /repo "$OSV_SCANNER" \
+            scan source "${files[@]/#/--lockfile=}" 2>&1 | tee "$RUNNER_TEMP/go.txt"
+      # Report of the results, with the output of the failed checks only: in the run summary and, on a PR, in a comment
+      # that later runs update. The comment is created only when a check fails.
+      - name: Report
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          RESULTS: |
+            gitleaks ${{ steps.gitleaks.outcome }} Secrets (gitleaks)
+            zizmor ${{ steps.zizmor.outcome }} GitHub Actions (zizmor)
+            trivy ${{ steps.trivy.outcome }} Infrastructure as code (Trivy)
+            rust ${{ steps.rust.outcome }} Rust dependencies (cargo-deny)
+            python ${{ steps.python.outcome }} Python dependencies (OSV-Scanner)
+            javascript ${{ steps.javascript.outcome }} JavaScript/TypeScript dependencies (OSV-Scanner)
+            java ${{ steps.java.outcome }} Java dependencies (OSV-Scanner)
+            go ${{ steps.go.outcome }} Go dependencies (OSV-Scanner)
+        run: |
+          marker="<!-- security-report -->"
+          report="$RUNNER_TEMP/report.md"
+          failed=""
+          {
+            echo "$marker"
+            echo "## Security"
+            echo
+            echo "| Check | Result |"
+            echo "| --- | --- |"
+            while read -r id result name; do
+              [ -n "$id" ] || continue
+              case "$result" in
+                success) echo "| $name | ✅ |" ;;
+                skipped) echo "| $name | ➖ not run |" ;;
+                *)
+                  echo "| $name | ❌ $result |"
+                  failed="$failed $id"
+                  ;;
+              esac
+            done <<< "$RESULTS"
+            for id in $failed; do
+              printf '\n<details><summary>%s</summary>\n\n```\n' "$id"
+              # The last lines only: a comment holds at most 65536 characters.
+              tail -n 150 "$RUNNER_TEMP/$id.txt" 2>/dev/null || echo "No output: the check did not start."
+              printf '```\n\n</details>\n'
+            done
+            printf '\n[Run](%s)\n' "$RUN_URL"
+          } > "$report"
+          cat "$report" >> "$GITHUB_STEP_SUMMARY"
+
+          if [ -n "$PR" ]; then
+            comment=$(gh api "repos/$GH_REPO/issues/$PR/comments" --paginate \
+              --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$marker\"))) | .id") ||
+              comment=""
+            comment=${comment%%$'\n'*}
+            body=$(head -c 65000 "$report")
+            # A PR from a fork has a read-only token: the report stays in the summary.
+            if [ -n "$comment" ]; then
+              gh api -X PATCH "repos/$GH_REPO/issues/comments/$comment" -f body="$body" > /dev/null ||
+                echo "::warning::could not update the comment on the PR"
+            elif [ -n "$failed" ]; then
+              gh api "repos/$GH_REPO/issues/$PR/comments" -f body="$body" > /dev/null ||
+                echo "::warning::could not comment on the PR"
+            fi
+          fi
+          [ -z "$failed" ]
