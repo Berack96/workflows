@@ -29,7 +29,7 @@ Checks the title of a PR, which becomes the subject of the squash commit and dec
 
 | Input | Default | |
 | --- | --- | --- |
-| `pattern` | `^(feat\|fix\|docs\|refactor\|test\|chore)(\([^)]+\))?!?: .+` | Bash regex the title must match |
+| `pattern` | `^(feat\|fix\|perf\|refactor\|docs\|test\|build\|ci\|style\|revert\|chore)(\([^)]+\))?!?: .+` | Bash regex the title must match |
 
 ### `test.yml`
 

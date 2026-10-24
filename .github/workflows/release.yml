@@ -483,7 +483,7 @@ jobs:
               text = settings.read_text(encoding="utf-8")
               paths = [
                   ":" + p.lstrip(":")
-                  for call in re.findall(r"\binclude\b\s*\(?([^)\n]*)", text)
+                  for call in re.findall(r"\binclude\b\s*(\([^)]*\)|[^\n]*)", text)
                   for p in re.findall(r"""["']([^"']+)["']""", call)
               ]
               folders = {p: Path(*p.strip(":").split(":")) for p in paths}
@@ -559,9 +559,10 @@ jobs:
             { echo "::error::{X}.{Y}.{Z} in $TAG needs {X}, {Y} and {Z} in $release_tag"; exit 1; }
 
       # The commit to tag. Without `from`: the one of the run, unless the branch has moved past it (a re-run of an old
-      # push) or, with `path`, no commit of its directories came after the latest tag of this environment. With `from`: the one of a tag of `from` on the branch, after the latest tag of this environment and with
-      # a run of `from-workflow` passed up to this job, since anyone with write access can push a tag. A re-run finds
-      # its tag already on the commit, and keeps it.
+      # push) or, with `path`, no commit of its paths came after the latest tag of this environment. With `from`: the
+      # one of a tag of `from` on the branch, after the latest tag of this environment and with a run of
+      # `from-workflow` passed up to this job, since anyone with write access can push a tag. A re-run finds its tag
+      # already on the commit, and keeps it.
       - id: target
         env:
           FROM_TAG: ${{ inputs.from-tag }}
