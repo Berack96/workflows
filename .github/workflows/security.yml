@@ -89,11 +89,26 @@ jobs:
           docker run --rm --quiet -v "$PWD:/repo:ro" \
             ghcr.io/gitleaks/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f \
             dir /repo --redact --no-banner --no-color -v 2>&1 | tee "$RUNNER_TEMP/gitleaks.txt"
+      # Without a zizmor config of the caller, this one: the workflows of this repository by version (its releases are
+      # immutable), everything else by hash.
       - id: zizmor
         if: inputs.actions
         continue-on-error: true
         run: |
-          docker run --rm --quiet -v "$PWD:/repo:ro" -w /repo -e GH_TOKEN \
+          config=()
+          if [ -z "$(ls .github/zizmor.yml .github/zizmor.yaml zizmor.yml zizmor.yaml 2> /dev/null)" ]; then
+            mkdir "$RUNNER_TEMP/zizmor"
+            cat > "$RUNNER_TEMP/zizmor/zizmor.yml" <<'EOF'
+          rules:
+            unpinned-uses:
+              config:
+                policies:
+                  "Berack96/workflows/*": ref-pin
+                  "*": hash-pin
+          EOF
+            config=(-v "$RUNNER_TEMP/zizmor:/config:ro" -e ZIZMOR_CONFIG=/config/zizmor.yml)
+          fi
+          docker run --rm --quiet -v "$PWD:/repo:ro" -w /repo -e GH_TOKEN "${config[@]}" \
             ghcr.io/zizmorcore/zizmor:1.25.2@sha256:14ea7f5cc7c67933394a35b5a38a277397818d232602635edb2010b313afb110 \
             -q --no-progress --min-severity=high --min-confidence=medium .github 2>&1 | tee "$RUNNER_TEMP/zizmor.txt"
         env:

@@ -13,23 +13,39 @@ fixes and releases, generic enough for any repository.
 
 ## Usage
 
-A job calls a workflow with `uses`, pinned to a commit with its version in a comment, and grants it the permissions it
-needs (listed for each workflow):
+A job calls a workflow with `uses`, pinned to a version, and grants it the permissions it needs (listed for each
+workflow). The releases of this repository are immutable: a tag `vX.Y.Z` cannot move, so it is as safe as a commit, and
+`security.yml` accepts it (see [zizmor](#securityyml)). Dependabot updates it.
 
 ```yaml
 jobs:
   title:
-    uses: Berack96/workflows/.github/workflows/pr-title.yml@<sha> # vX.Y.Z
+    uses: Berack96/workflows/.github/workflows/pr-title.yml@vX.Y.Z
 ```
 
-The workflows contain all their scripts: nothing is loaded from this repository at another ref, so the pinned commit
+The workflows contain all their scripts: nothing is loaded from this repository at another ref, so the pinned version
 is all that runs. Inputs with several values (commands, paths) take one per line.
 
-This repository is public: any repository can call it. Settings of the calling repositories:
+This repository is public: any repository can call it.
 
-- **`security-fix.yml`**: **Settings → Actions → General → Allow GitHub Actions to create and approve pull requests**
-  in the calling repository.
-- **Immutable releases** (**Settings → General → Releases**) work with `release.yml`.
+### Settings of the calling repositories
+
+[`settings/`](settings) has the GitHub settings these workflows expect, applied by an admin with
+`settings/apply.sh <owner>/<repo>` (`gh` and `jq`) on a new repository, and again to align an old one. Not a workflow:
+the `GITHUB_TOKEN` cannot change settings and rulesets.
+
+- [`settings.json`](settings/settings.json): only squash merges, with the PR title as subject and an empty body, and
+  the branch deleted after the merge.
+- Immutable releases, for `release.yml`.
+- GitHub Actions can create pull requests, for `security-fix.yml`.
+- [`ruleset.json`](settings/ruleset.json), the ruleset `Main` of the default branch: no deletion, no force push,
+  linear history, only squash PRs, and the checks `Title / Title` and `Test / Checks` required. If a ruleset with the
+  same name exists it is updated. In the UI: **Settings → Rules → Rulesets → New ruleset → Import a ruleset**.
+
+The name of a required check is `<name of the caller job> / <name of the job of the workflow>`: the ones of the ruleset
+hold only for callers with the job names of the [examples](#pr-tests-and-security-checks). A repository without tests,
+or with other checks, passes a copy of the ruleset as second argument. A check skipped on a draft PR has the name of
+the caller job only (`Test`): a draft stays pending until it is marked ready.
 
 ## `pr-title.yml`
 
@@ -91,6 +107,19 @@ The report, a table of the results with the output of the failed checks, is alwa
 also a comment: created when a check fails, then updated by the next runs, also when they pass. From a fork the token
 cannot comment, and the report stays in the summary.
 
+zizmor uses the config of the caller (`.github/zizmor.yml`, `zizmor.yml`), if there is one. Without it, this one: the
+workflows of this repository pinned by version, everything else by hash. A caller with a config of its own adds the
+policy to it to pin these workflows by version:
+
+```yaml
+rules:
+  unpinned-uses:
+    config:
+      policies:
+        "Berack96/workflows/*": ref-pin
+        "*": hash-pin
+```
+
 ## `security-fix.yml`
 
 After failed security checks (`needs` on the job of `security.yml`, `if: failure()`): a draft PR with a single commit on
@@ -121,6 +150,9 @@ If nothing changed (a committed secret, a vulnerability without a fix) the commi
 failure, with the link to the run. The branch is pushed only when its content changes. A PR already marked ready for
 review is left alone: a push made with the token of the workflow would not re-run its CI, which starts when the PR is
 marked ready. The updates and `update-command` run without the token.
+
+The fixes go in a workflow without `pull_request`, like the [weekly example](#weekly-security-checks-with-the-fixes):
+on a PR the job would show up among the checks as skipped, and its base would be `<n>/merge`, not a branch.
 
 ## `release.yml`
 
@@ -267,7 +299,7 @@ jobs:
     if: ${{ !github.event.pull_request.draft }}
     permissions:
       contents: read
-    uses: Berack96/workflows/.github/workflows/test.yml@<sha> # vX.Y.Z
+    uses: Berack96/workflows/.github/workflows/test.yml@vX.Y.Z
     with:
       mise: true
       cache: |
@@ -289,7 +321,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
-    uses: Berack96/workflows/.github/workflows/security.yml@<sha> # vX.Y.Z
+    uses: Berack96/workflows/.github/workflows/security.yml@vX.Y.Z
     with:
       python: false
 ```
@@ -309,7 +341,7 @@ jobs:
   title:
     name: Title
     if: ${{ !github.event.pull_request.draft }}
-    uses: Berack96/workflows/.github/workflows/pr-title.yml@<sha> # vX.Y.Z
+    uses: Berack96/workflows/.github/workflows/pr-title.yml@vX.Y.Z
 ```
 
 ### Weekly security checks, with the fixes
@@ -329,7 +361,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
-    uses: Berack96/workflows/.github/workflows/security.yml@<sha> # vX.Y.Z
+    uses: Berack96/workflows/.github/workflows/security.yml@vX.Y.Z
 
   fix:
     name: Fix
@@ -338,7 +370,7 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
-    uses: Berack96/workflows/.github/workflows/security-fix.yml@<sha> # vX.Y.Z
+    uses: Berack96/workflows/.github/workflows/security-fix.yml@vX.Y.Z
     with:
       # Go is not built in.
       update-command: |
@@ -380,7 +412,7 @@ jobs:
       contents: write
       pull-requests: read
       actions: read
-    uses: Berack96/workflows/.github/workflows/release.yml@<sha> # vX.Y.Z
+    uses: Berack96/workflows/.github/workflows/release.yml@vX.Y.Z
     with:
       tag: v{YYYY}.{MM}-staging.{NNN}
       release-tag: v{X}.{Y}.{Z}
@@ -410,7 +442,7 @@ jobs:
       contents: write
       pull-requests: read
       actions: read
-    uses: Berack96/workflows/.github/workflows/release.yml@<sha> # vX.Y.Z
+    uses: Berack96/workflows/.github/workflows/release.yml@vX.Y.Z
     with:
       from: v{YYYY}.{MM}-staging.{NNN}
       from-tag: ${{ inputs.tag }}
@@ -430,7 +462,7 @@ jobs:
       contents: write
       pull-requests: read
       actions: read
-    uses: Berack96/workflows/.github/workflows/release.yml@<sha> # vX.Y.Z
+    uses: Berack96/workflows/.github/workflows/release.yml@vX.Y.Z
 
   deploy:
     name: Deploy
@@ -454,7 +486,7 @@ jobs:
       contents: write
       pull-requests: read
       actions: read
-    uses: Berack96/workflows/.github/workflows/release.yml@<sha> # vX.Y.Z
+    uses: Berack96/workflows/.github/workflows/release.yml@vX.Y.Z
     with:
       dry-run: true
 
@@ -483,7 +515,7 @@ jobs:
       contents: write
       pull-requests: read
       actions: read
-    uses: Berack96/workflows/.github/workflows/release.yml@<sha> # vX.Y.Z
+    uses: Berack96/workflows/.github/workflows/release.yml@vX.Y.Z
     with:
       expect-tag: ${{ needs.version.outputs.tag }}
       artifact: build-*
@@ -509,7 +541,7 @@ jobs:
       contents: write
       pull-requests: read
       actions: read
-    uses: Berack96/workflows/.github/workflows/release.yml@<sha> # vX.Y.Z
+    uses: Berack96/workflows/.github/workflows/release.yml@vX.Y.Z
     with:
       tag: ${{ matrix.loader }}-staging-{YYYY}.{MM}-build.{NNN}
       release-tag: ${{ matrix.loader }}@{X}.{Y}.{Z}
@@ -536,7 +568,7 @@ jobs:
       contents: write
       pull-requests: read
       actions: read
-    uses: Berack96/workflows/.github/workflows/release.yml@<sha> # vX.Y.Z
+    uses: Berack96/workflows/.github/workflows/release.yml@vX.Y.Z
     with:
       dry-run: true
 
@@ -565,7 +597,7 @@ jobs:
       contents: write
       pull-requests: read
       actions: read
-    uses: Berack96/workflows/.github/workflows/release.yml@<sha> # vX.Y.Z
+    uses: Berack96/workflows/.github/workflows/release.yml@vX.Y.Z
     with:
       release-tag: v{X}.{Y}.{Z}
       github-release: none
@@ -581,7 +613,7 @@ jobs:
       contents: write
       pull-requests: read
       actions: read
-    uses: Berack96/workflows/.github/workflows/release.yml@<sha> # vX.Y.Z
+    uses: Berack96/workflows/.github/workflows/release.yml@vX.Y.Z
     with:
       tag: ${{ matrix.loader }}-26.3@{X}.{Y}.{Z}
       release-tag: v{X}.{Y}.{Z}
@@ -593,4 +625,4 @@ jobs:
 ## This repository
 
 The `ci-*.yml` workflows run the workflows above on this repository itself: PR title, security checks (on PRs, and
-weekly with the fixes), staging tags `vYYYY.MM-staging.NNN` on `main` and releases `vX.Y.Z` by hand.
+weekly with the fixes on `main`), staging tags `vYYYY.MM-staging.NNN` on `main` and releases `vX.Y.Z` by hand.
