@@ -1,0 +1,142 @@
+# Deploy of a commit to a GitHub environment: the job checks out the commit, prepares the tools, optionally builds and
+# starts a docker compose project, then runs the commands of the caller, one deploy at a time per environment.
+name: Deploy
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: GitHub environment of the deploy (`production`), with its protection rules and history
+        type: string
+        required: true
+      ref:
+        description: Commit or tag to deploy, e.g. the `sha` output of `release.yml` (empty for the commit of the run)
+        type: string
+        default: ""
+      run:
+        description: Commands of the deploy (bash, one per line); with `compose`, run after it, e.g. the migrations
+        type: string
+        default: ""
+      compose:
+        description: Compose files of a docker compose project to build and start (one per line); empty for no compose
+        type: string
+        default: ""
+      project:
+        description: Name of the compose project (empty for the name of the repository)
+        type: string
+        default: ""
+      env-file-var:
+        description: Environment variable of the runner with the path of the `.env` of the deploy, for compose and `run`
+        type: string
+        default: ""
+      env-example:
+        description: File of the repository with every variable the `.env` must have (checked if it exists)
+        type: string
+        default: .env.example
+      wait-timeout:
+        description: Seconds to wait for the compose services to be running and healthy
+        type: number
+        default: 300
+      runs-on:
+        description: Runner of the job, a label (`self-hosted`) or a JSON list of labels
+        type: string
+        default: ubuntu-latest
+      env:
+        description: Environment variables for the whole job, one `NAME=value` per line
+        type: string
+        default: ""
+      mise:
+        description: Install the tools of the repository's mise config
+        type: boolean
+        default: false
+
+permissions: {}
+
+jobs:
+  deploy:
+    name: Deploy
+    runs-on: ${{ startsWith(inputs.runs-on, '[') && fromJSON(inputs.runs-on) || inputs.runs-on }}
+    environment: ${{ inputs.environment }}
+    # A deploy waits for the one in progress on the same environment, never cancels it.
+    concurrency:
+      group: deploy-${{ inputs.environment }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      # Before mise: variables like `MISE_DISABLE_TOOLS` must already be there.
+      - if: inputs.env
+        env:
+          VARS: ${{ inputs.env }}
+        run: printf '%s\n' "$VARS" >> "$GITHUB_ENV"
+      # mise pinned: version and sha256 of the linux-x64 binary (not of the archive).
+      - if: inputs.mise
+        uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
+        with:
+          version: 2026.10.9
+          sha256: ${{ runner.os == 'Linux' && runner.arch == 'X64' && '6ab6646b52b83f6bbd51c9d0d3ae54264ffa90efd1ac6d7c0ec5a86bbc6a0030' || '' }}
+      # The `.env` lives on the runner, out of git and GitHub: every variable of the example must be in it.
+      - id: env-file
+        if: inputs.env-file-var
+        env:
+          VAR: ${{ inputs.env-file-var }}
+          EXAMPLE: ${{ inputs.env-example }}
+        run: |
+          file=${!VAR:-}
+          if [ -z "$file" ] || [ ! -f "$file" ]; then
+            echo "::error::$VAR on the runner must be the path of the .env of the deploy (now: '$file')"
+            exit 1
+          fi
+          if [ -f "$EXAMPLE" ]; then
+            missing=0
+            while IFS= read -r line; do
+              if [[ "$line" =~ ^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*= ]]; then
+                key=${BASH_REMATCH[1]}
+                grep -qE "^[[:space:]]*$key[[:space:]]*=" "$file" ||
+                  { echo "::error::$key is missing in $file (see $EXAMPLE)"; missing=1; }
+              fi
+            done < "$EXAMPLE"
+            [ "$missing" = 0 ]
+          fi
+          echo "path=$file" >> "$GITHUB_OUTPUT"
+      - name: Compose
+        if: inputs.compose
+        env:
+          COMPOSE: ${{ inputs.compose }}
+          PROJECT: ${{ inputs.project || github.event.repository.name }}
+          ENV_FILE: ${{ steps.env-file.outputs.path }}
+          WAIT_TIMEOUT: ${{ inputs.wait-timeout }}
+        run: |
+          args=(-p "$PROJECT")
+          while IFS= read -r file; do
+            [ -z "$file" ] || args+=(-f "$file")
+          done <<< "$COMPOSE"
+          [ -z "$ENV_FILE" ] || args+=(--env-file "$ENV_FILE")
+          docker compose "${args[@]}" build
+          docker compose "${args[@]}" up -d --wait --wait-timeout "$WAIT_TIMEOUT"
+      # shortcut: no secrets for the commands, they read them from the runner; add them when a deploy needs GitHub's.
+      - name: Run
+        if: inputs.run || !inputs.compose
+        env:
+          RUN: ${{ inputs.run }}
+          ENV_FILE: ${{ steps.env-file.outputs.path }}
+        run: |
+          run=$RUN
+          if [ -z "$run" ]; then
+            echo "::error::nothing to deploy: set run, compose or both"
+            exit 1
+          fi
+          # The variables of the `.env` for the commands, with `NAME = value` read as `NAME=value` like compose does.
+          if [ -n "$ENV_FILE" ]; then
+            set -a
+            . <(sed 's/^\([A-Za-z_][A-Za-z0-9_]*\)[[:space:]]*=[[:space:]]*/\1=/' "$ENV_FILE")
+            set +a
+          fi
+          bash -eo pipefail -c "$run"
