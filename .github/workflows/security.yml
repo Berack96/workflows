@@ -211,7 +211,8 @@ jobs:
               [ -n "$id" ] || continue
               case "$result" in
                 success) echo "| $name | ✅ |" ;;
-                skipped) echo "| $name | ➖ not run |" ;;
+                # The checks not run (disabled, or no lockfile of that ecosystem) stay out of the report.
+                skipped) ;;
                 *)
                   echo "| $name | ❌ $result |"
                   failed="$failed $id"
