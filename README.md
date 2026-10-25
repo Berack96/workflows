@@ -1,7 +1,7 @@
 # workflows
 
 My personal GitHub workflows: reusable workflows (`workflow_call`) for PR titles, tests, security checks, security
-fixes and releases, generic enough for any repository.
+fixes, releases and deploys, generic enough for any repository.
 
 - [Usage](#usage)
 - [`pr-title.yml`](#pr-titleyml): format of the PR titles
@@ -9,6 +9,7 @@ fixes and releases, generic enough for any repository.
 - [`security.yml`](#securityyml): security checks
 - [`security-fix.yml`](#security-fixyml): draft PR with the fixes of failed security checks
 - [`release.yml`](#releaseyml): tags and GitHub releases
+- [`deploy.yml`](#deployyml): deploy to a GitHub environment
 - [Examples](#examples)
 
 ## Usage
@@ -244,6 +245,24 @@ The release notes list the titles of the commits since the latest release, of `p
 conventional commits): Features (`feat`), Fixes (`fix`) and the others in a collapsed section, with the scope in bold,
 the link to the full changelog and the authors.
 
+## `deploy.yml`
+
+Deploys a commit to a [GitHub environment](https://docs.github.com/actions/how-tos/deploy/configure-and-manage-deployments/manage-environments):
+it checks out the commit, prepares the tools and runs the deploy commands of the caller. The environment, created at
+the first run, keeps the history of the deploys and can have protection rules (required reviewers, allowed branches).
+One deploy at a time per environment: the next one waits, the one in progress is never cancelled. The commands run
+without the token and without secrets: a self-hosted runner reads them from its own files. Permissions:
+`contents: read`.
+
+| Input | Default | |
+| --- | --- | --- |
+| `environment` | required | GitHub environment, e.g. `production` |
+| `ref` | | Commit or tag to deploy, e.g. the `sha` output of `release.yml`; empty for the commit of the run |
+| `run` | required | Commands of the deploy (bash) |
+| `runs-on` | `ubuntu-latest` | Runner: a label (`self-hosted`) or a JSON list (`["self-hosted", "linux"]`) |
+| `env` | | Environment variables of the whole job, `NAME=value`; set before mise, so they can configure it |
+| `mise` | `false` | Install the tools of the repository's mise config; mise is pinned by version, and by sha256 on linux-x64 |
+
 ## Examples
 
 ### PR: tests and security checks
@@ -436,9 +455,17 @@ jobs:
     name: Deploy
     needs: release
     if: needs.release.outputs.tag != ''
-    runs-on: self-hosted
-    steps:
-      - run: echo "deploy ${{ needs.release.outputs.tag }}"
+    permissions:
+      contents: read
+    uses: Berack96/workflows/.github/workflows/deploy.yml@<sha> # vX.Y.Z
+    with:
+      environment: production
+      ref: ${{ needs.release.outputs.sha }}
+      runs-on: self-hosted
+      env: |
+        VERSION=${{ needs.release.outputs.tag }}
+      run: |
+        docker compose up -d --build --wait
 ```
 
 ### A build that needs its version, on several systems
