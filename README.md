@@ -149,7 +149,8 @@ Permissions: `contents: write`, `pull-requests: write`.
 If nothing changed (a committed secret, a vulnerability without a fix) the commit is empty and the PR reports the
 failure, with the link to the run. The branch is pushed only when its content changes. A PR already marked ready for
 review is left alone: a push made with the token of the workflow would not re-run its CI, which starts when the PR is
-marked ready. The updates and `update-command` run without the token.
+marked ready. The updates and `update-command` run without the token; the tools of the updates (uv, bun, pnpm) are
+installed before, with it, only for the vulnerable lockfiles.
 
 The fixes go in a workflow without `pull_request`, like the [weekly example](#weekly-security-checks-with-the-fixes):
 on a PR the job would show up among the checks as skipped, and its base would be `<n>/merge`, not a branch.

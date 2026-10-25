@@ -87,6 +87,17 @@ jobs:
           cat "$1"
           EOF
           bash -eo pipefail "$RUNNER_TEMP/scan.sh" "$RUNNER_TEMP/vulnerable.txt"
+      # The tools of the updates, only of the vulnerable lockfiles, installed with the token: without it mise calls the
+      # GitHub API anonymously, a limit the shared runners have already used up (403). The updates then find them.
+      - if: steps.pr.outputs.skip != 'true'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          mapfile -t tools < <(cut -d' ' -f1 "$RUNNER_TEMP/vulnerable.txt" | xargs -r -n1 basename | sort -u |
+            sed -n "s/^bun\.lock$/$BUN/p; s/^pnpm-lock\.yaml$/$PNPM/p; s/^uv\.lock$/$UV/p")
+          if [ "${#tools[@]}" -gt 0 ]; then
+            mise install "${tools[@]}" || echo "::warning::could not install ${tools[*]}: their updates will fail"
+          fi
       # Only the vulnerable packages, each in its own lockfile, as far as the version ranges of the manifests allow.
       - if: steps.pr.outputs.skip != 'true'
         run: |
