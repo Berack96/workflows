@@ -1,13 +1,10 @@
-# Security checks of this repository: on every PR and every Monday on main, for the CVEs found after the merge; by hand
-# on any branch.
+# Security checks of this repository on every PR. The weekly ones with the fixes, also by hand on any branch, are in
+# `ci-security-weekly.yml`.
 name: Security
 
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
-  schedule:
-    - cron: "0 6 * * 1"
-  workflow_dispatch:
 
 permissions: {}
 
@@ -24,14 +21,3 @@ jobs:
       contents: read
       pull-requests: write
     uses: ./.github/workflows/security.yml
-
-  # Not on PRs: a draft PR with the updates of the vulnerable packages, or the report of the failure, on top of the
-  # branch of the run.
-  fix:
-    name: Fix
-    needs: security
-    if: failure() && github.event_name != 'pull_request'
-    permissions:
-      contents: write
-      pull-requests: write
-    uses: ./.github/workflows/security-fix.yml
