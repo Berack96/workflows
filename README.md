@@ -280,7 +280,8 @@ the link to the full changelog and the authors.
 ## `deploy.yml`
 
 Deploys a commit to a [GitHub environment](https://docs.github.com/actions/how-tos/deploy/configure-and-manage-deployments/manage-environments):
-it checks out the commit, prepares the tools and runs the deploy commands of the caller. The environment, created at
+it checks out the commit, prepares the tools, builds and starts a docker compose project if there is one, and runs
+the deploy commands of the caller. The environment, created at
 the first run, keeps the history of the deploys and can have protection rules (required reviewers, allowed branches).
 One deploy at a time per environment: the next one waits, the one in progress is never cancelled. The commands run
 without the token and without secrets: a self-hosted runner reads them from its own files. Permissions:
@@ -290,10 +291,23 @@ without the token and without secrets: a self-hosted runner reads them from its 
 | --- | --- | --- |
 | `environment` | required | GitHub environment, e.g. `production` |
 | `ref` | | Commit or tag to deploy, e.g. the `sha` output of `release.yml`; empty for the commit of the run |
-| `run` | required | Commands of the deploy (bash) |
+| `run` | | Commands of the deploy (bash); with `compose`, run after it (the migrations of a database). At least one of the two |
+| `compose` | | Compose files of the project to build and start, `-f` of `docker compose`; empty for no compose |
+| `project` | name of the repository | Name of the compose project, `-p` of `docker compose` |
+| `env-file-var` | | Environment variable of the runner with the path of the `.env` of the deploy |
+| `env-example` | `.env.example` | File of the repository with every variable the `.env` must have; not checked if missing |
+| `wait-timeout` | `300` | Seconds `docker compose up --wait` waits for the services to be running and healthy |
 | `runs-on` | `ubuntu-latest` | Runner: a label (`self-hosted`) or a JSON list (`["self-hosted", "linux"]`) |
 | `env` | | Environment variables of the whole job, `NAME=value`; set before mise, so they can configure it |
 | `mise` | `false` | Install the tools of the repository's mise config; mise is pinned by version, and by sha256 on linux-x64 |
+
+With docker compose, on a self-hosted runner:
+
+1. The `.env` of the deploy is a file of the runner, out of git and GitHub, with its path in an environment variable of
+   the runner (`env-file-var`). Every variable of `env-example` must be in it, or the deploy stops before starting.
+2. `docker compose -p <project> -f <compose> --env-file <.env> build`, then `up -d --wait`: the deploy fails if a
+   service does not become running, or healthy if it has a healthcheck, within `wait-timeout`.
+3. `run` with the variables of the `.env` (`NAME = value` read as `NAME=value`), e.g. the migrations.
 
 ## Examples
 
@@ -489,15 +503,20 @@ jobs:
     if: needs.release.outputs.tag != ''
     permissions:
       contents: read
-    uses: Berack96/workflows/.github/workflows/deploy.yml@<sha> # vX.Y.Z
+    uses: Berack96/workflows/.github/workflows/deploy.yml@vX.Y.Z
     with:
       environment: production
       ref: ${{ needs.release.outputs.sha }}
       runs-on: self-hosted
       env: |
-        VERSION=${{ needs.release.outputs.tag }}
+        RELEASE_TAG=${{ needs.release.outputs.tag }}
+      mise: true
+      compose: docker-compose.yml
+      # `GESTIONALE_ENV_FILE=/srv/gestionale/.env` in the environment of the runner.
+      env-file-var: GESTIONALE_ENV_FILE
+      wait-timeout: 360
       run: |
-        docker compose up -d --build --wait
+        mise run migrate
 ```
 
 ### A build that needs its version, on several systems
