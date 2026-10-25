@@ -25,11 +25,8 @@ jobs:
 The workflows contain all their scripts: nothing is loaded from this repository at another ref, so the pinned commit
 is all that runs. Inputs with several values (commands, paths) take one per line.
 
-Settings of the repositories:
+This repository is public: any repository can call it. Settings of the calling repositories:
 
-- **This repository private**: only the private repositories of the same owner can call it, with **Settings → Actions
-  → General → Access → Accessible from repositories owned by the user**. A public repository can call it only if this
-  one is public.
 - **`security-fix.yml`**: **Settings → Actions → General → Allow GitHub Actions to create and approve pull requests**
   in the calling repository.
 - **Immutable releases** (**Settings → General → Releases**) work with `release.yml`.
@@ -223,7 +220,9 @@ there. The log of the run lists all the paths.
 `github-release: release` creates a release for each tag, `none` only tags. With `prerelease` there is at most one
 pre-release per environment: the one of its latest tag after the latest release (`release-tag`). Each new tag gets a
 new pre-release and the older ones are deleted; the runs promoting from it update only its notes. In a chain like
-alpha → beta → release, the alpha pre-release left behind by a release goes away at the next alpha run.
+alpha → beta → release, the alpha pre-release left behind by a release goes away at the next alpha run. An
+environment handles only the pre-releases of its own template: after a change of template, the last pre-release of the
+old one is left behind, and goes away by hand.
 
 Files are attached only when a release is created, later only title and notes change: immutable releases work. A
 re-run that finds the release already created does not add its files. A promoted tag gets the files of its
