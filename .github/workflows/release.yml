@@ -70,6 +70,10 @@ on:
         description: With `from`, delete the tags of `from` before the promoted one, except the ones of the current period (`{N}` counts from them) and the ones with a GitHub release
         type: boolean
         default: false
+      moving-tag:
+        description: Tag with a fixed name (`staging`, `production`) moved to the commit of the run, not matching the templates of this run (empty for none)
+        type: string
+        default: ""
 
     outputs:
       tag:
@@ -108,6 +112,7 @@ jobs:
       TAG: ${{ inputs.tag }}
       RELEASE_TAG: ${{ inputs.release-tag }}
       FROM: ${{ inputs.from }}
+      MOVING_TAG: ${{ inputs.moving-tag }}
       GITHUB_RELEASE: ${{ inputs.github-release }}
       PROJECT_PATH: ${{ inputs.path }}
       ASSETS_NOTES: ${{ inputs.assets-notes }}
@@ -607,6 +612,14 @@ jobs:
           [ -z "$FROM" ] || parse "$FROM"
           [[ $TAG != *\{[XYZ]\}* || $release_tag == *'{X}'*'{Y}'*'{Z}'* ]] ||
             { echo "::error::{X}.{Y}.{Z} in $TAG needs {X}, {Y} and {Z} in $release_tag"; exit 1; }
+          if [ -n "$MOVING_TAG" ]; then
+            git check-ref-format "refs/tags/$MOVING_TAG" || { echo "::error::invalid moving-tag $MOVING_TAG"; exit 1; }
+            # The steps above would take it for a tag of the environment, and pruning could delete it.
+            for template in "$TAG" "$release_tag" "$FROM"; do
+              ! [[ $MOVING_TAG =~ $(regex "$template") ]] ||
+                { echo "::error::moving-tag $MOVING_TAG matches the template $template"; exit 1; }
+            done
+          fi
 
       # The commit to tag. Without `from`: the one of the run, unless the branch has moved past it (a re-run of an old
       # push) or, with `path`, no commit of its paths came after the latest tag of this environment. With `from`: the
@@ -744,3 +757,20 @@ jobs:
         run: |
           source "$RUNNER_TEMP/release.sh"
           prune "$FROM" "$SHA"
+
+      # A fixed name for the commit of this environment. Only forward: the re-run of an old promotion does not take it
+      # back. Without `force` the tag could not move, and a ruleset on tags can refuse it: the release is done anyway.
+      - name: Moving tag
+        if: steps.target.outputs.skip != 'true' && !inputs.dry-run && inputs.moving-tag != ''
+        env:
+          SHA: ${{ steps.target.outputs.sha }}
+        run: |
+          if ! current=$(gh api "repos/$GH_REPO/git/ref/tags/$MOVING_TAG" --jq .object.sha 2> /dev/null); then
+            gh api "repos/$GH_REPO/git/refs" -f ref="refs/tags/$MOVING_TAG" -f sha="$SHA" > /dev/null ||
+              echo "::warning::could not create the tag $MOVING_TAG"
+          elif git merge-base --is-ancestor "$SHA" "$current"; then
+            echo "$MOVING_TAG is already on $SHA or after it"
+          else
+            gh api -X PATCH "repos/$GH_REPO/git/refs/tags/$MOVING_TAG" -f sha="$SHA" -F force=true > /dev/null ||
+              echo "::warning::could not move the tag $MOVING_TAG"
+          fi
