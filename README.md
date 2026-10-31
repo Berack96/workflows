@@ -189,6 +189,7 @@ Permissions: `contents: write`, `pull-requests: read`, `actions: read`.
 | `dry-run` | `false` | Only compute the tag, in the `tag` output, without creating tags and releases: for a build that needs its version |
 | `expect-tag` | | Tag the run must create, the one of the dry run: it fails if another tag came in between |
 | `prune` | `false` | With `from`, delete the tags of `from` before the promoted one, once released ([details](#pruning-staging-tags)) |
+| `moving-tag` | | Tag with a fixed name, moved to the commit of the run ([details](#moving-tags)) |
 
 | Output | |
 | --- | --- |
@@ -271,6 +272,19 @@ Staging tags are a temporary history: once one is released, the ones before it a
 - the ones of the current period, with the same `{YYYY}`, `{YY}`, `{MM}` as today: `{N}` goes on from them, and
   deleting them would give their names again. Without dates in the template, the newest one stays, for the same reason;
 - the ones that still have a GitHub release.
+
+### Moving tags
+
+`moving-tag: staging` (or `production`) moves a tag with that name to the commit of the run, or to the promoted one
+with `from`: one stable ref for what follows an environment from outside, like a script on a server or a compose file
+read at a ref. It is only a tag, without notes, files or a GitHub release, and pruning does not touch it. It fails if
+the name matches `tag`, `release-tag` or `from`.
+
+The tag moves at the end of the run, only when the run has a tag: not on a dry run, nor when the branch has moved on or
+nothing changed in `path`. It only goes forward: the re-run of an old promotion leaves it where it is. If the move is
+refused, for example by a ruleset on tags, the run ends with a warning: the tag and the release of the run stay.
+
+A `git fetch --tags` does not update a tag that has moved: who follows it uses `git fetch --force --tags`.
 
 ### Release notes
 
