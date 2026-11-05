@@ -158,7 +158,7 @@ on a PR the job would show up among the checks as skipped, and its base would be
 
 ## `release.yml`
 
-Tags and GitHub releases of one **environment**: staging, production, beta, a mod loader, a project of a monorepo… An
+Tags and GitHub releases of one **environment**: preview, release, beta, a mod loader, a project of a monorepo… An
 environment is the template of its tags, and each call creates the tags of one environment:
 
 - without `from` it tags the commit of the run: the pushed one, or the head of the branch when started by hand. A run
@@ -177,7 +177,7 @@ Permissions: `contents: write`, `pull-requests: read`, `actions: read`.
 | `release-tag` | | Template of the release tags, base of `{X}.{Y}.{Z}` and of the notes; empty when this run creates them (only with `github-release: release`) |
 | `from` | | Template of the tags to promote; empty to tag the commit of the run |
 | `from-tag` | | Tag to promote; empty for the latest of `from` on the branch |
-| `from-workflow` | | Workflow file (`staging.yml`) that must have passed on the commit of the tag to promote, up to its job calling this workflow |
+| `from-workflow` | | Workflow file (`preview.yml`) that must have passed on the commit of the tag to promote, up to its job calling this workflow |
 | `github-release` | `release` | [GitHub release](#github-releases) of the tags: `release`, `prerelease` or `none` |
 | `path` | | [Directories and files of the project](#projects-and-dependencies) in a monorepo |
 | `deps` | | `cargo`, `gradle`, `node` or `uv`: adds to `path` the workspace packages its projects depend on, and the shared build files |
@@ -188,7 +188,7 @@ Permissions: `contents: write`, `pull-requests: read`, `actions: read`.
 | `cliff-config` | | git-cliff config of the release notes, a path in the repository; empty for the bundled one |
 | `dry-run` | `false` | Only compute the tag, in the `tag` output, without creating tags and releases: for a build that needs its version |
 | `expect-tag` | | Tag the run must create, the one of the dry run: it fails if another tag came in between |
-| `prune` | `false` | With `from`, delete the tags of `from` before the promoted one, once released ([details](#pruning-staging-tags)) |
+| `prune` | `false` | With `from`, delete the tags of `from` before the promoted one, once released ([details](#pruning-preview-tags)) |
 
 | Output | |
 | --- | --- |
@@ -209,7 +209,7 @@ deploy is a job before or after the release, with `needs` and its outputs.
 | Template | Tags |
 | --- | --- |
 | `v{X}.{Y}.{Z}` (default) | `v1.6.3` |
-| `v{YYYY}.{MM}-staging.{NNN}` | `v2026.05-staging.007` |
+| `v{YYYY}.{MM}-preview.{NNN}` | `v2026.05-preview.007` |
 | `v{X}.{Y}.{Z}-beta.{N}` | `v1.7.0-beta.2` |
 | `v{YY}.{MM}.{N}` | `v26.05.3` |
 | `web@{X}.{Y}.{Z}` | `web@1.6.3` |
@@ -218,9 +218,9 @@ deploy is a job before or after the release, with `needs` and its outputs.
 
 A template must give a different tag to each commit: with only dates, add a `{N}`.
 
-GitHub lists the releases by the name of their tags read as versions, not by date: a pre-release `staging-…` goes
-below every `v1.2.3`, even when it is the newest. A staging template like `v{YYYY}.{MM}-staging.{NNN}` stays above the
-releases, and holds no version of a release: a staging tag never becomes wrong, whichever one is promoted. With
+GitHub lists the releases by the name of their tags read as versions, not by date: a pre-release `preview-…` goes
+below every `v1.2.3`, even when it is the newest. A preview template like `v{YYYY}.{MM}-preview.{NNN}` stays above the
+releases, and holds no version of a release: a preview tag never becomes wrong, whichever one is promoted. With
 `v{X}.{Y}.{Z}-rc.{N}` instead, promoting an older candidate leaves the newer ones with the number of a release
 already out.
 
@@ -262,9 +262,9 @@ Files are attached only when a release is created, later only title and notes ch
 re-run that finds the release already created does not add its files. A promoted tag gets the files of its
 pre-release, if it is still there: only the latest tag of an environment has one.
 
-### Pruning staging tags
+### Pruning preview tags
 
-Staging tags are a temporary history: once one is released, the ones before it are not needed anymore. With
+Preview tags are a temporary history: once one is released, the ones before it are not needed anymore. With
 `prune: true` a promotion deletes the tags of `from` reachable from the promoted commit, except:
 
 - the promoted one, and the ones after it or on other branches;
@@ -412,12 +412,12 @@ jobs:
         go mod tidy
 ```
 
-### Staging on each push, production by hand
+### Preview on each push, release by hand
 
-`.github/workflows/staging.yml`:
+`.github/workflows/preview.yml`:
 
 ```yaml
-name: Staging
+name: Preview
 
 on:
   push:
@@ -448,23 +448,23 @@ jobs:
       actions: read
     uses: Berack96/workflows/.github/workflows/release.yml@vX.Y.Z
     with:
-      tag: v{YYYY}.{MM}-staging.{NNN}
+      tag: v{YYYY}.{MM}-preview.{NNN}
       release-tag: v{X}.{Y}.{Z}
       github-release: prerelease
       artifact: dist
       assets-notes: Built for linux x86_64.
 ```
 
-`.github/workflows/production.yml`:
+`.github/workflows/release.yml`:
 
 ```yaml
-name: Production
+name: Release
 
 on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Staging tag to release (empty for the latest)
+        description: Preview tag to release (empty for the latest)
         required: false
 
 permissions: {}
@@ -478,12 +478,12 @@ jobs:
       actions: read
     uses: Berack96/workflows/.github/workflows/release.yml@vX.Y.Z
     with:
-      from: v{YYYY}.{MM}-staging.{NNN}
+      from: v{YYYY}.{MM}-preview.{NNN}
       from-tag: ${{ inputs.tag }}
-      from-workflow: staging.yml
+      from-workflow: preview.yml
 ```
 
-### Only production, by hand, then a deploy
+### Only a release, by hand, then a deploy
 
 ```yaml
 on:
@@ -570,7 +570,7 @@ jobs:
 
 ### A monorepo: one environment per project
 
-A staging tag for each project that changed, with the dependencies from Gradle: a change in `common` gives one to both
+A preview tag for each project that changed, with the dependencies from Gradle: a change in `common` gives one to both
 loaders, a change in `fabric` only to Fabric:
 
 ```yaml
@@ -579,7 +579,7 @@ on:
     branches: [main]
 
 jobs:
-  staging:
+  preview:
     name: Pre-release
     strategy:
       matrix:
@@ -590,7 +590,7 @@ jobs:
       actions: read
     uses: Berack96/workflows/.github/workflows/release.yml@vX.Y.Z
     with:
-      tag: ${{ matrix.loader }}-staging-{YYYY}.{MM}-build.{NNN}
+      tag: ${{ matrix.loader }}-preview-{YYYY}.{MM}-build.{NNN}
       release-tag: ${{ matrix.loader }}@{X}.{Y}.{Z}
       github-release: prerelease
       path: |
@@ -672,4 +672,4 @@ jobs:
 ## This repository
 
 The `ci-*.yml` workflows run the workflows above on this repository itself: PR title, security checks (on PRs, and
-weekly with the fixes on `main`), staging tags `vYYYY.MM-staging.NNN` on `main` and releases `vX.Y.Z` by hand.
+weekly with the fixes on `main`), preview tags `vYYYY.MM-preview.NNN` on `main` and releases `vX.Y.Z` by hand.
