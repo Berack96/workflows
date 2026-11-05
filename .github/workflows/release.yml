@@ -70,6 +70,10 @@ on:
         description: With `from`, delete the tags of `from` before the promoted one, except the ones of the current period (`{N}` counts from them) and the ones with a GitHub release
         type: boolean
         default: false
+      prune-keep:
+        description: Without `from`, after the tag of the run delete the tags of `tag` on the branch but the newest ones, this many (0 for none deleted), and the ones with a GitHub release
+        type: number
+        default: 0
       moving-tag:
         description: Tag with a fixed name (`preview`, `release`) moved to the commit of the run, not matching the templates of this run (empty for none)
         type: string
@@ -120,6 +124,7 @@ jobs:
       DEPS: ${{ inputs.deps }}
       DEPS_ROOT: ${{ inputs.deps-root }}
       PATHS_COMMAND: ${{ inputs.paths-command }}
+      PRUNE_KEEP: ${{ inputs.prune-keep }}
     steps:
       # Private repositories have no environment reviewers: only an admin of the repository runs it by hand.
       - if: github.event_name == 'workflow_dispatch'
@@ -363,10 +368,10 @@ jobs:
           }
 
           # Deletes the tags of template $1 before commit $2 (reachable from it, not on it): the ones of the current period
-          # stay, the same dates as today, since `{N}` goes on from them (without dates, the newest one stays). Tags with a
-          # GitHub release stay too.
+          # stay, the same dates as today, since `{N}` goes on from them (without dates, the newest one stays). With $3, the
+          # newest $3 tags reachable from $2 stay instead, whatever their period. Tags with a GitHub release stay too.
           prune() {
-            local re current dated=false newest released tag
+            local re current dated=false newest released tag kept=0
             local -A values
             values[YYYY]=$(date -u +%Y)
             values[YY]=${values[YYYY]:2}
@@ -378,10 +383,20 @@ jobs:
             fi
             newest=$(git tag --list "$(glob "$1")" --sort=-v:refname | grep -E -m 1 "$re" || true)
             released=$(gh release list --limit 1000 --json tagName --jq '.[].tagName')
-            git tag --merged "$2" --list "$(glob "$1")" | while read -r tag; do
-              if ! [[ $tag =~ $re ]] || [ "$(git rev-parse "$tag^{commit}")" = "$(git rev-parse "$2^{commit}")" ] ||
-                { $dated && [[ $tag =~ $current ]]; } || { ! $dated && [ "$tag" = "$newest" ]; } ||
-                grep -qxF -- "$tag" <<< "$released"; then
+            git tag --merged "$2" --list "$(glob "$1")" --sort=-v:refname | while read -r tag; do
+              if ! [[ $tag =~ $re ]]; then
+                continue
+              fi
+              kept=$((kept + 1))
+              if [ -n "$3" ]; then
+                if [ "$kept" -le "$3" ]; then
+                  continue
+                fi
+              elif [ "$(git rev-parse "$tag^{commit}")" = "$(git rev-parse "$2^{commit}")" ] ||
+                { $dated && [[ $tag =~ $current ]]; } || { ! $dated && [ "$tag" = "$newest" ]; }; then
+                continue
+              fi
+              if grep -qxF -- "$tag" <<< "$released"; then
                 continue
               fi
               echo "Deleting $tag"
@@ -624,6 +639,8 @@ jobs:
           parse "$TAG"
           parse "$release_tag"
           [ -z "$FROM" ] || parse "$FROM"
+          [[ $PRUNE_KEEP =~ ^[0-9]+$ ]] || { echo "::error::prune-keep must be a whole number"; exit 1; }
+          [ "$PRUNE_KEEP" -eq 0 ] || [ -z "$FROM" ] || { echo "::error::prune-keep is for the runs without from"; exit 1; }
           [[ $TAG != *\{[XYZ]\}* || $release_tag == *'{X}'*'{Y}'*'{Z}'* ]] ||
             { echo "::error::{X}.{Y}.{Z} in $TAG needs {X}, {Y} and {Z} in $release_tag"; exit 1; }
           if [ -n "$MOVING_TAG" ]; then
@@ -771,6 +788,15 @@ jobs:
         run: |
           source "$RUNNER_TEMP/release.sh"
           prune "$FROM" "$SHA"
+
+      # The tags of this environment past the newest `prune-keep`, once the pre-release has moved to the tag of the run.
+      - name: Prune old tags
+        if: steps.target.outputs.skip != 'true' && !inputs.dry-run && inputs.from == '' && inputs.prune-keep > 0
+        env:
+          SHA: ${{ steps.target.outputs.sha }}
+        run: |
+          source "$RUNNER_TEMP/release.sh"
+          prune "$TAG" "$SHA" "$PRUNE_KEEP"
 
       # A fixed name for the commit of this environment. Only forward: the re-run of an old promotion does not take it
       # back. Without `force` the tag could not move, and a ruleset on tags can refuse it: the release is done anyway.
