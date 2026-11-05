@@ -154,10 +154,14 @@ jobs:
           {% if name == "Other" %}
           <details><summary>Other ({{ commits | length }})</summary>
           {% else %}
-          ### {{ name }}
+          ## {{ name }}
           {%- endif %}
-          {% for commit in commits %}
-          - {% if commit.scope %}**{{ commit.scope }}**: {% endif %}{{ commit.message | split(pat="\n") | first | upper_first }}
+          {% for commit in commits | sort(attribute="scope") %}
+          {%- set title = commit.message | split(pat="\n") | first | upper_first %}
+          {%- set pr = commit.remote.pr_number | default(value="") %}
+          - {% if commit.scope %}**{{ commit.scope }}**: {% endif %}
+          {%- if pr %}{{ title | replace(from=" (#" ~ pr ~ ")", to="") }} ([#{{ pr }}](https://github.com/{{ remote.github.owner }}/{{ remote.github.repo }}/pull/{{ pr }}))
+          {%- else %}{{ title }}{% endif %}
           {%- endfor %}
           {% if name == "Other" %}
           </details>
@@ -169,7 +173,13 @@ jobs:
           {%- endif %}
           {%- if github.contributors | length > 0 %}
 
-          <sub>Authors: {% for contributor in github.contributors %}@{{ contributor.username }}{% if not loop.last %}, {% endif %}{% endfor %}</sub>
+          <details><summary><sub>Contributors ({{ github.contributors | length }})</sub></summary>
+
+          {% for contributor in github.contributors %}
+          - @{{ contributor.username }}
+          {%- endfor %}
+
+          </details>
           {%- endif %}
           """
           trim = true
@@ -177,11 +187,15 @@ jobs:
           [git]
           conventional_commits = true
           filter_unconventional = false
+          # The first parser that matches decides the group: breaking changes before the type. An empty `default_scope`,
+          # since `sort` by scope does not hold the titles without one.
           commit_parsers = [
-            { message = '^feat(\(.*\))?!?:', group = "<!-- 0 -->Features" },
-            { message = '^fix(\(.*\))?!?:', group = "<!-- 1 -->Fixes" },
+            { message = '^[a-z]+(\([^)]*\))?!:', group = "<!-- 0 -->⚠️ Breaking changes", default_scope = "" },
+            { message = '^feat(\(.*\))?:', group = "<!-- 1 -->⚙️ Features", default_scope = "" },
+            { message = '^fix(\(.*\))?:', group = "<!-- 2 -->🛠️ Fixes", default_scope = "" },
+            { message = '^perf(\(.*\))?:', group = "<!-- 3 -->⚡ Performance", default_scope = "" },
             # Titles that are not conventional end up in "Other" too.
-            { message = ".*", group = "<!-- 2 -->Other" },
+            { message = ".*", group = "<!-- 4 -->Other", default_scope = "" },
           ]
           EOF
 
