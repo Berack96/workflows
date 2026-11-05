@@ -189,6 +189,7 @@ Permissions: `contents: write`, `pull-requests: read`, `actions: read`.
 | `dry-run` | `false` | Only compute the tag, in the `tag` output, without creating tags and releases: for a build that needs its version |
 | `expect-tag` | | Tag the run must create, the one of the dry run: it fails if another tag came in between |
 | `prune` | `false` | With `from`, delete the tags of `from` before the promoted one, once released ([details](#pruning-preview-tags)) |
+| `prune-keep` | `0` | Without `from`, keep only this many tags of `tag` on the branch, the newest ones; `0` deletes none ([details](#pruning-preview-tags)) |
 | `moving-tag` | | Tag with a fixed name, moved to the commit of the run ([details](#moving-tags)) |
 
 | Output | |
@@ -272,6 +273,11 @@ Preview tags are a temporary history: once one is released, the ones before it a
 - the ones of the current period, with the same `{YYYY}`, `{YY}`, `{MM}` as today: `{N}` goes on from them, and
   deleting them would give their names again. Without dates in the template, the newest one stays, for the same reason;
 - the ones that still have a GitHub release.
+
+Without promotions, the preview tags still grow by one on each push. With `prune-keep: 3` a run without `from`, after
+its tag and pre-release, deletes the tags of `tag` reachable from its commit but the newest 3, of any period: the
+newest one always stays, so `{N}` goes on from it. The ones on other branches and the ones with a GitHub release stay
+too. A deleted tag can no longer be promoted with `from-tag`.
 
 ### Moving tags
 

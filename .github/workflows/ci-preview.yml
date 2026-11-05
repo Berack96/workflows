@@ -22,3 +22,4 @@ jobs:
       tag: v{YYYY}.{MM}-preview.{NNN}
       release-tag: v{X}.{Y}.{Z}
       github-release: prerelease
+      prune-keep: 3
