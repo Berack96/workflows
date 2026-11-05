@@ -2,46 +2,46 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Lingua
+## Language
 
-Codice, commenti, README, messaggi di commit, titoli e descrizioni di PR e issue sono **in inglese**, come il resto del repository (il repository è pubblico). Le risposte all'utente sono **in italiano**.
+Everything is **in English**: code, comments, README, commit messages, titles and descriptions of PRs and issues, and replies to the user. Keep this convention in everything you write.
 
-## Come lavorare in questo repo
+## How to work in this repo
 
-**Regola numero uno: non si tocca nulla che non sia stato chiesto.** Tutto il resto di questa sezione discende da qui.
+**Rule number one: touch nothing that was not asked for.** The rest of this section follows from it.
 
-- **Scope chiuso**: modifica solo i file e le righe necessari a soddisfare la richiesta. Non riscrivere codice funzionante, non rinominare, non riordinare import, non riformattare righe che non stai già modificando, non aggiungere docstring/commenti/type hint a codice che non c'entra, non "sistemare" file vicini. Se un file non serve al task, resta com'è.
-- **Commenti brevi**: se un commento serve davvero (spiega un perché non ovvio), massimo 1-2 righe. Niente blocchi di commento lunghi. Niente riferimenti a issue, PR, task o cronologia della modifica ("issue #NN", "aggiunto per...", "prima era così, ora..."): il commento descrive lo stato attuale del codice, non come ci si è arrivati — quei riferimenti marciscono appena il codice cambia ancora e appartengono al messaggio di commit o alla PR, non al codice. Niente percorsi di file nei commenti: si nomina la cosa (funzione, tipo, comando), non il file in cui sta, che si sposta.
-- **Minimo essenziale**: di quello che è stato chiesto, implementa la versione più piccola che funziona; i bug trovati per strada si segnalano a fine lavoro, non si correggono di iniziativa. Prima di dichiarare finito, fai l'autoverifica del diff con la skill `codice-minimale`.
-- **Non essere minimale su**: validazione di input ai confini di fiducia, gestione errori che previene perdita di dati, misure di sicurezza, accessibilità di base, qualunque cosa richiesta esplicitamente.
-- **Autonomia**: procedi senza chiedere conferma per le modifiche al codice; chiedi solo se due letture del task portano a lavori sostanzialmente diversi.
-- **Git**: non committare né pushare a meno che non venga chiesto esplicitamente. Il branch principale è `main` e il lavoro si fa su branch dedicati mergiati via PR. Commit e titoli delle PR seguono Conventional Commits: tipi `feat`, `fix`, `refactor`, `docs`, `test`, `chore`, `ci`; scope, obbligatorio nei titoli delle PR, il nome del workflow toccato senza estensione (`pr-title`, `test`, `security`, `security-fix`, `release`, `deploy`), `settings` o `claude` per `.claude/`.
+- **Closed scope**: change only the files and lines needed for the request. Do not rewrite working code, rename, reorder imports, reformat lines you are not already changing, add docstrings/comments/type hints to unrelated code, or "fix" nearby files. A file the task does not need stays as it is.
+- **Short comments**: if a comment is really needed (it explains a non-obvious why), at most 1-2 lines. No long comment blocks. No references to issues, PRs, tasks or the history of the change ("issue #NN", "added for...", "it used to be..., now..."): a comment describes the current state of the code, not how it got there — those references rot as soon as the code changes again and belong in the commit message or the PR, not in the code. No file paths in comments: name the thing (function, type, command), not the file it is in, which moves.
+- **Bare minimum**: of what was asked, implement the smallest version that works; bugs found along the way are reported at the end, not fixed on your own initiative. Before calling it done, self-check the diff with the `minimal-code` skill.
+- **Do not be minimal on**: input validation at trust boundaries, error handling that prevents data loss, security measures, basic accessibility, anything explicitly asked for.
+- **Autonomy**: go ahead with code changes without asking for confirmation; ask only if two readings of the task lead to substantially different work.
+- **Git**: do not commit or push unless explicitly asked. The main branch is `main` and work happens on dedicated branches merged through PRs. Commits and PR titles follow Conventional Commits: types `feat`, `fix`, `refactor`, `docs`, `test`, `chore`, `ci`; the scope, mandatory in PR titles, is the name of the workflow touched without extension (`pr-title`, `test`, `security`, `security-fix`, `release`, `deploy`), `settings`, or `claude` for `.claude/`.
 
-### Quando viene richiesta una nuova feature
+### When a new feature is requested
 
-Quando viene chiesto esplicitamente un lavoro con commit (una feature, un fix, o altro lavoro strutturato in più passi — resta valido il vincolo del bullet **Git** sopra: solo se richiesto), il flusso — branch, checklist, PR draft, un commit per step, gestione di richieste che ampliano il lavoro, code review pre-ready, PR pronta per la review — è nella skill `pr`; per il formato dei singoli commit vedi la skill `commit`.
+When work with commits is explicitly requested (a feature, a fix, or other work in several steps — the **Git** bullet above still holds: only if asked), the flow — branch, checklist, draft PR, one commit per step, handling requests that widen the work, pre-ready review, PR ready for review — is in the `pr` skill; for the format of single commits see the `commit` skill.
 
-## Documentazione del progetto
+## Project documentation
 
-Il [README.md](../README.md) nella root è l'unica documentazione del repository: input, permessi e comportamento di ogni workflow riutilizzabile, impostazioni dei repository chiamanti, esempi. Quando ti serve capire *cosa fa* un workflow o *perché*, leggi il README (e il workflow), non questo file.
+The [README.md](../README.md) at the root is the only documentation of the repository: inputs, permissions and behavior of each reusable workflow, settings of the calling repositories, examples. When you need to understand *what* a workflow does or *why*, read the README (and the workflow), not this file.
 
-Questo CLAUDE.md è solo una mappa operativa per orientarsi: dove stanno le cose, come si lanciano, quali vincoli rispettare.
+This CLAUDE.md is only an operational map: where things are, how they run, which constraints to respect.
 
-## Manutenzione di questo file
+## Maintenance of this file
 
-**Di default questo file NON si tocca**: non è un changelog. Quando e come aggiornarlo (e quando invece va aggiornato il README di un progetto) è nella skill `documenti`.
+**By default this file is NOT touched**: it is not a changelog. When and how to update it (and when the README should be updated instead) is in the `documentation` skill.
 
-## Comandi
+## Commands
 
 ```bash
-settings/apply.sh <owner>/<repo>  # applica le impostazioni GitHub di settings/ a un repository (gh e jq, da admin)
+settings/apply.sh <owner>/<repo>  # applies the GitHub settings of settings/ to a repository (gh and jq, as admin)
 ```
 
-**Test**: non ci sono test locali. Sulle PR girano i workflow `ci-*.yml`, che chiamano i workflow riutilizzabili di questo stesso repository (titolo, controlli di sicurezza con zizmor); le modifiche al comportamento si provano con run reali su un branch temporaneo. Non inventare comandi di test oltre a questi.
+**Tests**: there are no local tests. On PRs the `ci-*.yml` workflows run, calling the reusable workflows of this same repository (title, security checks with zizmor); behavior changes are tested with real runs on a temporary branch. Do not invent test commands beyond these.
 
-## Architettura
+## Architecture
 
-- `.github/workflows/<nome>.yml` senza prefisso: i workflow riutilizzabili (`workflow_call`), usati dagli altri repository con un tag `vX.Y.Z`. Contengono tutti i loro script: non caricano nulla da questo repository a un altro ref.
-- `.github/workflows/ci-*.yml`: la CI di questo repository, che chiama i workflow riutilizzabili con `./`.
-- `settings/`: impostazioni e ruleset GitHub che i workflow si aspettano nei repository chiamanti.
-- Il titolo della PR diventa il soggetto del commit squash e decide la versione successiva (`feat` → minor, `!` → major, il resto → patch): il push su `main` crea un tag di staging, la release `vX.Y.Z` è immutabile.
+- `.github/workflows/<name>.yml` without prefix: the reusable workflows (`workflow_call`), used by other repositories with a `vX.Y.Z` tag. They contain all their scripts: they load nothing from this repository at another ref.
+- `.github/workflows/ci-*.yml`: the CI of this repository, calling the reusable workflows with `./`.
+- `settings/`: GitHub settings and ruleset the workflows expect in the calling repositories.
+- The PR title becomes the subject of the squash commit and decides the next version (`feat` → minor, `!` → major, anything else → patch): a push on `main` creates a staging tag (not for `.md` files and `.claude/`), the `vX.Y.Z` release is immutable.
