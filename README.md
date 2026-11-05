@@ -183,7 +183,7 @@ Permissions: `contents: write`, `pull-requests: read`, `actions: read`.
 | `deps` | | `cargo`, `gradle`, `node` or `uv`: adds to `path` the workspace packages its projects depend on, and the shared build files |
 | `deps-root` | `.` | Directory of the workspace that `deps` reads, e.g. `native` |
 | `paths-command` | | Command (bash) whose output, one path per line, is added to `path`: for the dependencies `deps` cannot find |
-| `artifact` | | Artifacts whose files are attached to the GitHub release (without `from`): a name, or a glob like `build-*` for the ones of a matrix; files with the same name overwrite each other |
+| `artifact` | | Artifacts whose files are attached to the GitHub release: a name, or a glob like `build-*` for the ones of a matrix; files with the same name overwrite each other, and with `from` the ones of the promoted release |
 | `assets-notes` | | Text added to the release notes when there are attached files |
 | `cliff-config` | | git-cliff config of the release notes, a path in the repository; empty for the bundled one |
 | `dry-run` | `false` | Only compute the tag, in the `tag` output, without creating tags and releases: for a build that needs its version |
@@ -262,7 +262,10 @@ old one is left behind, and goes away by hand.
 
 Files are attached only when a release is created, later only title and notes change: immutable releases work. A
 re-run that finds the release already created does not add its files. A promoted tag gets the files of its
-pre-release, if it is still there: only the latest tag of an environment has one.
+pre-release, if it is still there: only the latest tag of an environment has one. In their names the promoted tag
+becomes the new one: `app-v2026.11-preview.003.zip` of `v2026.11-preview.003` is `app-v1.2.0.zip` in `v1.2.0`. A file
+that holds the version in its content is rebuilt by a job before the promotion, with a dry run for the version, and
+passed in `artifact`: it replaces the file with the same name of the pre-release, and the others stay.
 
 ### Pruning preview tags
 

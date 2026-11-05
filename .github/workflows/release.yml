@@ -47,7 +47,7 @@ on:
         type: string
         default: ""
       artifact:
-        description: Artifacts whose files are attached to the GitHub release (without `from`), a name or a glob like `build-*`
+        description: Artifacts whose files are attached to the GitHub release, a name or a glob like `build-*` (with `from`, they replace the files of the promoted release with the same name)
         type: string
         default: ""
       assets-notes:
@@ -720,23 +720,34 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       # All the artifacts of the glob in `dist`: files with the same name overwrite each other.
-      - if: steps.target.outputs.skip != 'true' && !inputs.dry-run && inputs.from == '' && inputs.github-release != 'none' && inputs.artifact != ''
+      - if: steps.target.outputs.skip != 'true' && !inputs.dry-run && inputs.github-release != 'none' && inputs.artifact != ''
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: ${{ inputs.artifact }}
           merge-multiple: true
           path: dist
       # The files of the GitHub release of the promoted tag, if it is still there: a pre-release is only on the latest.
+      # The promoted tag in their names becomes the new one, and the artifacts of the run, already in `dist`, win.
       - if: steps.target.outputs.skip != 'true' && !inputs.dry-run && inputs.from != '' && inputs.github-release != 'none'
         env:
           SOURCE: ${{ steps.target.outputs.source }}
+          TARGET: ${{ steps.target.outputs.tag }}
         run: |
-          mkdir -p dist
+          mkdir -p dist "$RUNNER_TEMP/promoted"
           # A release without files is not an error: `gh release download` would fail on it.
           if ! assets=$(gh release view "$SOURCE" --json assets --jq '.assets | length' 2> /dev/null); then
             echo "::warning::no GitHub release for $SOURCE: only the latest tag of an environment has its pre-release"
           elif [ "$assets" -gt 0 ]; then
-            gh release download "$SOURCE" --dir dist
+            gh release download "$SOURCE" --dir "$RUNNER_TEMP/promoted"
+            for file in "$RUNNER_TEMP/promoted"/*; do
+              name=$(basename "$file")
+              name=${name//"$SOURCE"/"$TARGET"}
+              if [ -e "dist/$name" ]; then
+                echo "$name: the one of the artifacts"
+              else
+                mv "$file" "dist/$name"
+              fi
+            done
           fi
 
       # A re-run finds tag and release already created: the tag must be on this commit and the release created by this
