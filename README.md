@@ -289,8 +289,9 @@ A `git fetch --tags` does not update a tag that has moved: who follows it uses `
 ### Release notes
 
 The release notes list the titles of the commits since the latest release, of `path` only in a monorepo (git-cliff,
-conventional commits): Features (`feat`), Fixes (`fix`) and the others in a collapsed section, with the scope in bold,
-the link to the full changelog and the authors.
+conventional commits), each with the link to its PR and sorted by scope, the scope in bold: Breaking changes (any type
+with `!`), Features (`feat`), Fixes (`fix`), Performance (`perf`) and the others in a collapsed section. Then the link
+to the full changelog and the contributors, collapsed.
 
 ## `deploy.yml`
 
