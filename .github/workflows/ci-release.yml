@@ -1,11 +1,11 @@
-# By hand: release `vX.Y.Z` of a staging tag of this repository, then the staging tags before it are deleted.
-name: Production
+# By hand: release `vX.Y.Z` of a preview tag of this repository, then the preview tags before it are deleted.
+name: Release
 
 on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Staging tag to release (empty for the latest)
+        description: Preview tag to release (empty for the latest)
         required: false
 
 permissions: {}
@@ -19,7 +19,7 @@ jobs:
       actions: read
     uses: ./.github/workflows/release.yml
     with:
-      from: v{YYYY}.{MM}-staging.{NNN}
+      from: v{YYYY}.{MM}-preview.{NNN}
       from-tag: ${{ inputs.tag }}
-      from-workflow: ci-staging.yml
+      from-workflow: ci-preview.yml
       prune: true
