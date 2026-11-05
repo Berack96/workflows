@@ -44,4 +44,4 @@ settings/apply.sh <owner>/<repo>  # applies the GitHub settings of settings/ to 
 - `.github/workflows/<name>.yml` without prefix: the reusable workflows (`workflow_call`), used by other repositories with a `vX.Y.Z` tag. They contain all their scripts: they load nothing from this repository at another ref.
 - `.github/workflows/ci-*.yml`: the CI of this repository, calling the reusable workflows with `./`.
 - `settings/`: GitHub settings and ruleset the workflows expect in the calling repositories.
-- The PR title becomes the subject of the squash commit and decides the next version (`feat` → minor, `!` → major, anything else → patch): a push on `main` creates a staging tag (not for `.md` files and `.claude/`), the `vX.Y.Z` release is immutable.
+- The PR title becomes the subject of the squash commit and decides the next version (`feat` → minor, `!` → major, anything else → patch): a push on `main` creates a preview tag (not for `.md` files and `.claude/`), the `vX.Y.Z` release is immutable.
