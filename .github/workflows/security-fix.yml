@@ -20,6 +20,10 @@ on:
         description: Install the tools of the repository's mise config, for `update-command`
         type: boolean
         default: false
+      mention:
+        description: Mentioned (e.g. `@user`) when the PR is opened and when new advisories appear
+        type: string
+        default: ""
 
 permissions: {}
 
@@ -55,9 +59,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          pr=$(gh pr list --head "$BRANCH" --state open --json number,isDraft --jq '.[0] // empty')
+          pr=$(gh pr list --head "$BRANCH" --state open --json number,isDraft,body --jq '.[0] // empty')
           if [ -n "$pr" ]; then
             echo "number=$(jq -r .number <<< "$pr")" >> "$GITHUB_OUTPUT"
+            jq -r .body <<< "$pr" > "$RUNNER_TEMP/body.md"
             if [ "$(jq -r .isDraft <<< "$pr")" = false ]; then
               echo "::notice::PR #$(jq -r .number <<< "$pr") is ready for review: not updated"
               echo "skip=true" >> "$GITHUB_OUTPUT"
@@ -178,6 +183,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ steps.pr.outputs.number }}
+          MENTION: ${{ inputs.mention }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           # Only the files of the repository: no `node_modules` or `target` from the updates.
@@ -221,6 +227,9 @@ jobs:
           else
             body+=$'\n\nThe updates stay within the version ranges of the manifests: a package not fixed needs a new range.'
           fi
+          if [ -n "$MENTION" ]; then
+            body="$MENTION"$'\n\n'"$body"
+          fi
           # A PR body holds at most 65536 characters.
           body=$(head -c 60000 <<< "$body")
 
@@ -237,6 +246,14 @@ jobs:
           fi
           if [ -n "$PR" ]; then
             gh pr edit "$PR" --title "$title" --body "$body"
+            # The advisories missing from the previous body are new: a comment, since an edited body notifies no one.
+            new_ids=$({ cut -d' ' -f4 "$RUNNER_TEMP/vulnerable.txt"; cut -d' ' -f2 "$RUNNER_TEMP/images.txt"; } |
+              tr ',' '\n' | sort -u | while read -r id; do
+                [ -z "$id" ] || grep -qF -- "$id" "$RUNNER_TEMP/body.md" || echo "$id"
+              done | paste -sd' ')
+            if [ -n "$MENTION" ] && [ -n "$new_ids" ]; then
+              gh pr comment "$PR" --body "$MENTION new advisories: $new_ids"
+            fi
           else
             gh pr create --draft --base "$BASE" --head "$BRANCH" --title "$title" --body "$body"
           fi
