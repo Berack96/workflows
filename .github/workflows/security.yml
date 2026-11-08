@@ -40,6 +40,10 @@ on:
         description: Images of the services of the Compose files, only outside PRs (Trivy)
         type: boolean
         default: true
+      base-images:
+        description: Images of the `FROM` of the Dockerfiles, only outside PRs (Trivy)
+        type: boolean
+        default: false
 
 permissions: {}
 
@@ -87,6 +91,7 @@ jobs:
           detect java 'pom\.xml|gradle\.lockfile'
           detect go 'go\.mod'
           detect images 'compose\.ya?ml|docker-compose\.ya?ml'
+          detect dockerfiles 'Dockerfile|[^/]*\.Dockerfile|Dockerfile\.[^/]*'
       # The checks do not stop at the first failure: all results go in the summary.
       - id: gitleaks
         if: inputs.secrets
@@ -186,14 +191,32 @@ jobs:
             scan source "${files[@]/#/--lockfile=}" 2>&1 | tee "$RUNNER_TEMP/go.txt"
       # Only outside PRs: each image is pulled, and its CVEs do not depend on the changes of a PR.
       - id: images
-        if: inputs.images && steps.lockfiles.outputs.images && !startsWith(github.event_name, 'pull_request')
+        if: >-
+          !startsWith(github.event_name, 'pull_request') && (inputs.images && steps.lockfiles.outputs.images ||
+          inputs.base-images && steps.lockfiles.outputs.dockerfiles)
         continue-on-error: true
+        env:
+          COMPOSE: ${{ inputs.images && steps.lockfiles.outputs.images }}
+          DOCKERFILES: ${{ inputs.base-images && steps.lockfiles.outputs.dockerfiles }}
         run: |
-          mapfile -t files < "$RUNNER_TEMP/images.files"
           {
             status=0
+            touch "$RUNNER_TEMP/images.list"
             # yq reads the YAML: commented services are left out. An invalid Compose file fails the check.
-            yq -N '(.services // {})[] | .image // ""' "${files[@]}" > "$RUNNER_TEMP/images.list"
+            if [ "$COMPOSE" = true ]; then
+              mapfile -t files < "$RUNNER_TEMP/images.files"
+              yq -N '(.services // {})[] | .image // ""' "${files[@]}" >> "$RUNNER_TEMP/images.list"
+            fi
+            # The image of each `FROM`, without its flags, `scratch` and the stages of the same Dockerfile.
+            if [ "$DOCKERFILES" = true ]; then
+              mapfile -t files < "$RUNNER_TEMP/dockerfiles.files"
+              awk 'FNR == 1 { delete stages }
+                toupper($1) == "FROM" {
+                  i = 2; while ($i ~ /^--/) i++
+                  if ($i != "scratch" && !(tolower($i) in stages)) print $i
+                  if (toupper($(i + 1)) == "AS") stages[tolower($(i + 2))] = 1
+                }' "${files[@]}" >> "$RUNNER_TEMP/images.list"
+            fi
             while read -r image; do
               if [[ $image == *'$'* ]]; then
                 echo "::warning::$image: not scannable, the reference has a variable"

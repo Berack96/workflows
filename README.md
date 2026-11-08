@@ -104,6 +104,7 @@ the checks run even after a failed one. Permissions: `contents: read`, `pull-req
 | `java` | `true` | `pom.xml`, `gradle.lockfile` (OSV-Scanner; Gradle needs dependency locking) |
 | `go` | `true` | `go.mod` (OSV-Scanner) |
 | `images` | `true` | The `image` of each service of the Compose files (`compose.yaml`, `compose.yml`, `docker-compose.yaml`, `docker-compose.yml`), only outside PRs: high and critical CVEs with a fix (Trivy) |
+| `base-images` | `false` | The image of each `FROM` of the Dockerfiles (`Dockerfile`, `*.Dockerfile`, `Dockerfile.*`), like `images`. Only scanned: `security-fix.yml` does not update them |
 
 The images are scanned only outside PRs (on the schedule of the caller, or by hand): each one is pulled, and its CVEs
 do not depend on the changes of a PR. An image not pinned (`latest` or no tag) or with a variable in its reference
