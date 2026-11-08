@@ -1,7 +1,7 @@
 services:
   web:
-    image: nginx:1.25.0-alpine
+    image: nginx:1.31.8-alpine
   cache:
-    image: redis:7.0.0-alpine@sha256:558d0845026fe0bf091a00c0ad647ffacf9df385d780d433ca70661f7276f834
+    image: redis:7.4.12-alpine@sha256:c5d34a98396a4775e223c74e929162c35c5a2182901ba26b50ade939941ce14b
   variable:
     image: postgres:${PG_VERSION}
