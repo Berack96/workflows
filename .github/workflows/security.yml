@@ -36,6 +36,10 @@ on:
         description: Go dependencies, from `go.mod` (OSV-Scanner)
         type: boolean
         default: true
+      images:
+        description: Images of the services of the Compose files, only outside PRs (Trivy)
+        type: boolean
+        default: true
 
 permissions: {}
 
@@ -54,6 +58,7 @@ jobs:
     # Images pinned by digest.
     env:
       OSV_SCANNER: ghcr.io/google/osv-scanner:v2.6.0@sha256:afd838850ac1a0fcc15ff4a041dc9ba11123c3f0d2666217a5f0fcf9222b55fa
+      TRIVY: aquasec/trivy:0.71.0@sha256:016eae51fdcf989332a5404af7e8f625cd5d95d7c0907a221d080a996f556500
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -81,6 +86,7 @@ jobs:
           detect javascript 'package-lock\.json|yarn\.lock|pnpm-lock\.yaml|bun\.lock'
           detect java 'pom\.xml|gradle\.lockfile'
           detect go 'go\.mod'
+          detect images 'compose\.ya?ml|docker-compose\.ya?ml'
       # The checks do not stop at the first failure: all results go in the summary.
       - id: gitleaks
         if: inputs.secrets
@@ -117,8 +123,7 @@ jobs:
         if: inputs.iac
         continue-on-error: true
         run: |
-          docker run --rm --quiet -v "$PWD:/repo:ro" \
-            aquasec/trivy:0.71.0@sha256:016eae51fdcf989332a5404af7e8f625cd5d95d7c0907a221d080a996f556500 \
+          docker run --rm --quiet -v "$PWD:/repo:ro" "$TRIVY" \
             config -q --skip-version-check --severity HIGH,CRITICAL --exit-code 1 /repo 2>&1 |
             tee "$RUNNER_TEMP/trivy.txt"
       # cargo-deny from the official release, with fixed version and sha256 (the `digest` of the asset on GitHub).
@@ -179,6 +184,31 @@ jobs:
           mapfile -t files < "$RUNNER_TEMP/go.files"
           docker run --rm --quiet -v "$PWD:/repo:ro" -w /repo "$OSV_SCANNER" \
             scan source "${files[@]/#/--lockfile=}" 2>&1 | tee "$RUNNER_TEMP/go.txt"
+      # Only outside PRs: each image is pulled, and its CVEs do not depend on the changes of a PR.
+      - id: images
+        if: inputs.images && steps.lockfiles.outputs.images && !startsWith(github.event_name, 'pull_request')
+        continue-on-error: true
+        run: |
+          mapfile -t files < "$RUNNER_TEMP/images.files"
+          {
+            status=0
+            # Commented services are not in the YAML.
+            while read -r image; do
+              if [[ $image == *'$'* ]]; then
+                echo "::warning::$image: not scannable, the reference has a variable"
+                continue
+              fi
+              name=${image##*/}
+              if [[ $image != *@* && ($name != *:* || $name == *:latest) ]]; then
+                echo "::warning::$image is not pinned: its scan says nothing about the image running"
+              fi
+              # The database is downloaded once, for all the images.
+              docker run --rm --quiet -v "$RUNNER_TEMP/trivy:/root/.cache/trivy" "$TRIVY" \
+                image -q --skip-version-check --image-src remote --severity HIGH,CRITICAL --ignore-unfixed \
+                --exit-code 1 "$image" < /dev/null || status=1
+            done < <(yq -N '(.services // {})[] | .image // ""' "${files[@]}" | grep -v '^$' | sort -u)
+            exit "$status"
+          } 2>&1 | tee "$RUNNER_TEMP/images.txt"
       # Report of the results, with the output of the failed checks only: in the run summary and, on a PR, in a comment
       # that later runs update. The comment is created only when a check fails.
       - name: Report
@@ -197,6 +227,7 @@ jobs:
             javascript ${{ steps.javascript.outcome }} JavaScript/TypeScript dependencies (OSV-Scanner)
             java ${{ steps.java.outcome }} Java dependencies (OSV-Scanner)
             go ${{ steps.go.outcome }} Go dependencies (OSV-Scanner)
+            images ${{ steps.images.outcome }} Images of the Compose files (Trivy)
         run: |
           marker="<!-- security-report -->"
           report="$RUNNER_TEMP/report.md"
