@@ -195,7 +195,8 @@ jobs:
             names=$({
               cut -d' ' -f1,2 "$RUNNER_TEMP/remaining.txt" | grep -vxFf - <(cut -d' ' -f1,2 "$RUNNER_TEMP/vulnerable.txt") |
                 cut -d' ' -f2
-              awk 'NF == 3 { print $1 }' "$RUNNER_TEMP/images.txt"
+              # The name of the image, without tag and digest.
+              awk 'NF == 3 { sub(/@.*/, "", $1); sub(/:[^:\/]*$/, "", $1); print $1 }' "$RUNNER_TEMP/images.txt"
             } | sort -u | paste -sd, | sed 's/,/, /g' || true)
             title="fix(deps): update ${names:-vulnerable dependencies}"
           fi
