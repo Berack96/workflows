@@ -107,7 +107,8 @@ the checks run even after a failed one. Permissions: `contents: read`, `pull-req
 
 The images are scanned only outside PRs (on the schedule of the caller, or by hand): each one is pulled, and its CVEs
 do not depend on the changes of a PR. An image not pinned (`latest` or no tag) or with a variable in its reference
-gets a warning; the second one is not scanned. Only public images.
+gets a warning; the second one is not scanned. A scan that fails without results (network, rate limit of the registry)
+is a warning too, not a failed check. Only public images.
 
 The report, a table of the results with the output of the failed checks, is always in the run summary. On a PR it is
 also a comment: created when a check fails, then updated by the next runs, also when they pass. From a fork the token

@@ -204,9 +204,13 @@ jobs:
                 echo "::warning::$image is not pinned: its scan says nothing about the image running"
               fi
               # The database is downloaded once, for all the images.
+              # Exit code 2 for vulnerabilities; any other failure (network, rate limit) is only a warning.
               docker run --rm --quiet -v "$RUNNER_TEMP/trivy:/root/.cache/trivy" "$TRIVY" \
                 image -q --skip-version-check --image-src remote --severity HIGH,CRITICAL --ignore-unfixed \
-                --exit-code 1 "$image" < /dev/null || status=1
+                --exit-code 2 "$image" < /dev/null || case $? in
+                2) status=1 ;;
+                *) echo "::warning::$image: the scan failed" ;;
+              esac
             done < <(grep -v '^$' "$RUNNER_TEMP/images.list" | sort -u)
             exit "$status"
           } 2>&1 | tee "$RUNNER_TEMP/images.txt"
