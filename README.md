@@ -103,7 +103,7 @@ the checks run even after a failed one. Permissions: `contents: read`, `pull-req
 | `javascript` | `true` | `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `bun.lock` (OSV-Scanner) |
 | `java` | `true` | `pom.xml`, `gradle.lockfile` (OSV-Scanner; Gradle needs dependency locking) |
 | `go` | `true` | `go.mod` (OSV-Scanner) |
-| `images` | `true` | The `image` of each service of the Compose files (`compose.yaml`, `docker-compose.yml`, ...), only outside PRs: high and critical CVEs with a fix (Trivy) |
+| `images` | `true` | The `image` of each service of the Compose files (`compose.yaml`, `compose.yml`, `docker-compose.yaml`, `docker-compose.yml`), only outside PRs: high and critical CVEs with a fix (Trivy) |
 
 The images are scanned only outside PRs (on the schedule of the caller, or by hand): each one is pulled, and its CVEs
 do not depend on the changes of a PR. An image not pinned (`latest` or no tag) or with a variable in its reference

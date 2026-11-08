@@ -1,8 +1,8 @@
 # After failed security checks (`needs` on `security.yml`): a draft PR with a single commit on top of the branch of the
 # run. The commit updates the vulnerable packages found by OSV-Scanner in the lockfiles it can update and the vulnerable
-# images of the Compose files, then runs `update-command`; it is empty if nothing changed, and the PR only reports the failure. Always the same branch: the
-# draft PR is updated, never a second one. A PR already marked ready for review is left alone: a push with the token of
-# the workflow would not re-run its CI.
+# images of the Compose files, then runs `update-command`; it is empty if nothing changed, and the PR only reports the
+# failure. Always the same branch: the draft PR is updated, never a second one. A PR already marked ready for review is
+# left alone: a push with the token of the workflow would not re-run its CI.
 name: Security fix
 
 on:
@@ -143,6 +143,7 @@ jobs:
           mapfile -t files < <(git ls-files | grep -E '(^|/)(docker-)?compose\.ya?ml$' || true)
           touch "$RUNNER_TEMP/images.txt"
           [ "${#files[@]}" -gt 0 ] || exit 0
+          yq -N '(.services // {})[] | .image // ""' "${files[@]}" > "$RUNNER_TEMP/images.list"
           while read -r image; do
             ids=$(scan "$image") || { echo "::warning::$image: the scan failed"; continue; }
             [ -n "$ids" ] || continue
@@ -166,15 +167,15 @@ jobs:
                 fi
               fi
             fi
-            # Used only if none of the advisories of the current image is still there.
-            if [ -n "$new" ] && new_ids=$(scan "$new") &&
-              [ -z "$(comm -12 <(tr , '\n' <<< "$ids" | sort) <(tr , '\n' <<< "$new_ids" | sort))" ]; then
-              OLD=$image NEW=$new perl -pi -e 's/^(\s*image:\s*["\x27]?)\Q$ENV{OLD}\E(?=["\x27]?\s*(#.*)?$)/$1$ENV{NEW}/' "${files[@]}"
-            else
+            # Used only if none of the advisories of the current image is still there, and if its reference was replaced.
+            if ! { [ -n "$new" ] && new_ids=$(scan "$new") &&
+              [ -z "$(comm -12 <(tr , '\n' <<< "$ids" | sort) <(tr , '\n' <<< "$new_ids" | sort))" ] &&
+              OLD=$image NEW=$new perl -pi -e '$n += s/^(\s*image:\s*["\x27]?)\Q$ENV{OLD}\E(?=["\x27]?\s*(#.*)?$)/$1$ENV{NEW}/;
+                END { exit !$n }' "${files[@]}"; }; then
               new=""
             fi
             echo "$image $ids $new" | tee -a "$RUNNER_TEMP/images.txt"
-          done < <(yq -N '(.services // {})[] | .image // ""' "${files[@]}" | grep -v -e '^$' -e '\$' | sort -u)
+          done < <(grep -v -e '^$' -e '\$' "$RUNNER_TEMP/images.list" | sort -u)
       - if: steps.pr.outputs.skip != 'true'
         run: bash -eo pipefail "$RUNNER_TEMP/scan.sh" "$RUNNER_TEMP/remaining.txt"
       # A single commit on top of the branch of the run, pushed only if its content changed: a week without news does

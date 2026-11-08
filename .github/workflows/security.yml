@@ -192,7 +192,8 @@ jobs:
           mapfile -t files < "$RUNNER_TEMP/images.files"
           {
             status=0
-            # Commented services are not in the YAML.
+            # yq reads the YAML: commented services are left out. An invalid Compose file fails the check.
+            yq -N '(.services // {})[] | .image // ""' "${files[@]}" > "$RUNNER_TEMP/images.list"
             while read -r image; do
               if [[ $image == *'$'* ]]; then
                 echo "::warning::$image: not scannable, the reference has a variable"
@@ -206,7 +207,7 @@ jobs:
               docker run --rm --quiet -v "$RUNNER_TEMP/trivy:/root/.cache/trivy" "$TRIVY" \
                 image -q --skip-version-check --image-src remote --severity HIGH,CRITICAL --ignore-unfixed \
                 --exit-code 1 "$image" < /dev/null || status=1
-            done < <(yq -N '(.services // {})[] | .image // ""' "${files[@]}" | grep -v '^$' | sort -u)
+            done < <(grep -v '^$' "$RUNNER_TEMP/images.list" | sort -u)
             exit "$status"
           } 2>&1 | tee "$RUNNER_TEMP/images.txt"
       # Report of the results, with the output of the failed checks only: in the run summary and, on a PR, in a comment
