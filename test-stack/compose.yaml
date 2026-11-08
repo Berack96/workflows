@@ -1,0 +1,11 @@
+services:
+  web:
+    image: nginx:1.25.0-alpine
+  cache:
+    image: redis:7.0.0-alpine@sha256:558d0845026fe0bf091a00c0ad647ffacf9df385d780d433ca70661f7276f834
+  floating:
+    image: busybox
+  variable:
+    image: postgres:${PG_VERSION}
+  # old:
+  #   image: nginx:1.10
