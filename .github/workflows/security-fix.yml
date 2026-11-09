@@ -1,8 +1,8 @@
 # After failed security checks (`needs` on `security.yml`): a draft PR with a single commit on top of the branch of the
-# run. The commit updates the vulnerable packages found by OSV-Scanner in the lockfiles it can update, then runs
-# `update-command`; it is empty if nothing changed, and the PR only reports the failure. Always the same branch: the
-# draft PR is updated, never a second one. A PR already marked ready for review is left alone: a push with the token of
-# the workflow would not re-run its CI.
+# run. The commit updates the vulnerable packages found by OSV-Scanner in the lockfiles it can update and the vulnerable
+# images of the Compose files, then runs `update-command`; it is empty if nothing changed, and the PR only reports the
+# failure. Always the same branch: the draft PR is updated, never a second one. A PR already marked ready for review is
+# left alone: a push with the token of the workflow would not re-run its CI.
 name: Security fix
 
 on:
@@ -20,6 +20,10 @@ on:
         description: Install the tools of the repository's mise config, for `update-command`
         type: boolean
         default: false
+      mention:
+        description: Mentioned (e.g. `@user`) when the PR is opened and when new advisories appear
+        type: string
+        default: ""
 
 permissions: {}
 
@@ -42,6 +46,8 @@ jobs:
       BASE: ${{ github.ref_name }}
       # Tools of the updates, pinned: images by digest, the others by version (checked by mise).
       OSV_SCANNER: ghcr.io/google/osv-scanner:v2.6.0@sha256:afd838850ac1a0fcc15ff4a041dc9ba11123c3f0d2666217a5f0fcf9222b55fa
+      TRIVY: aquasec/trivy:0.71.0@sha256:016eae51fdcf989332a5404af7e8f625cd5d95d7c0907a221d080a996f556500
+      CRANE: gcr.io/go-containerregistry/crane:v0.22.1@sha256:1f968817b95790bed063f71175aa6b8ff879fa17064020415f3e18bb6e6a36e1
       UV: uv@0.13.5
       BUN: bun@1.4.4
       PNPM: pnpm@12.15.0
@@ -53,9 +59,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          pr=$(gh pr list --head "$BRANCH" --state open --json number,isDraft --jq '.[0] // empty')
+          pr=$(gh pr list --head "$BRANCH" --state open --json number,isDraft,body --jq '.[0] // empty')
           if [ -n "$pr" ]; then
             echo "number=$(jq -r .number <<< "$pr")" >> "$GITHUB_OUTPUT"
+            jq -r .body <<< "$pr" > "$RUNNER_TEMP/body.md"
             if [ "$(jq -r .isDraft <<< "$pr")" = false ]; then
               echo "::notice::PR #$(jq -r .number <<< "$pr") is ready for review: not updated"
               echo "skip=true" >> "$GITHUB_OUTPUT"
@@ -122,6 +129,53 @@ jobs:
           RUN: ${{ inputs.update-command }}
           VULNERABLE: ${{ runner.temp }}/vulnerable.txt
         run: bash -eo pipefail -c "$RUN"
+      # Each vulnerable image of the Compose files moves to the newest tag of its track (same major, same number of
+      # version parts, same suffix but its numbers) if that tag has none of its advisories. One `image advisories new`
+      # line per vulnerable image, without `new` if not fixable yet.
+      - if: steps.pr.outputs.skip != 'true'
+        run: |
+          scan() {
+            docker run --rm --quiet -v "$RUNNER_TEMP/trivy:/root/.cache/trivy" "$TRIVY" image -q --skip-version-check \
+              --image-src remote --severity HIGH,CRITICAL --ignore-unfixed --format json "$1" < /dev/null |
+              jq -r '[.Results[]?.Vulnerabilities[]?.VulnerabilityID] | unique | join(",")'
+          }
+          crane() { docker run --rm --quiet "$CRANE" "$@" < /dev/null; }
+          mapfile -t files < <(git ls-files | grep -E '(^|/)(docker-)?compose\.ya?ml$' || true)
+          touch "$RUNNER_TEMP/images.txt"
+          [ "${#files[@]}" -gt 0 ] || exit 0
+          yq -N '(.services // {})[] | .image // ""' "${files[@]}" > "$RUNNER_TEMP/images.list"
+          while read -r image; do
+            ids=$(scan "$image") || { echo "::warning::$image: the scan failed"; continue; }
+            [ -n "$ids" ] || continue
+            ref=${image%@*}
+            new=""
+            if [[ ${ref##*/} == *:* ]]; then
+              tag=$(crane ls "${ref%:*}" | awk -v t="${ref##*:}" '
+                function key(s, m, v) {
+                  if (!match(s, /^v?[0-9]+/)) return ""
+                  m = substr(s, 1, RLENGTH); s = substr(s, RLENGTH + 1)
+                  match(s, /^(\.[0-9]+)*/); v = substr(s, 1, RLENGTH); s = substr(s, RLENGTH + 1)
+                  gsub(/[0-9]+/, "N", s)
+                  return m " " gsub(/\./, "", v) " " s
+                }
+                BEGIN { k = key(t) }
+                k != "" && key($0) == k' | sort -V | tail -n 1) || tag=""
+              if [ -n "$tag" ] && [ "$tag" != "${ref##*:}" ]; then
+                new="${ref%:*}:$tag"
+                if [[ $image == *@* ]]; then
+                  new+="@$(crane digest "$new")" || new=""
+                fi
+              fi
+            fi
+            # Used only if none of the advisories of the current image is still there, and if its reference was replaced.
+            if ! { [ -n "$new" ] && new_ids=$(scan "$new") &&
+              [ -z "$(comm -12 <(tr , '\n' <<< "$ids" | sort) <(tr , '\n' <<< "$new_ids" | sort))" ] &&
+              OLD=$image NEW=$new perl -pi -e '$n += s/^(\s*image:\s*["\x27]?)\Q$ENV{OLD}\E(?=["\x27]?\s*(#.*)?$)/$1$ENV{NEW}/;
+                END { exit !$n }' "${files[@]}"; }; then
+              new=""
+            fi
+            echo "$image $ids $new" | tee -a "$RUNNER_TEMP/images.txt"
+          done < <(grep -v -e '^$' -e '\$' "$RUNNER_TEMP/images.list" | sort -u)
       - if: steps.pr.outputs.skip != 'true'
         run: bash -eo pipefail "$RUNNER_TEMP/scan.sh" "$RUNNER_TEMP/remaining.txt"
       # A single commit on top of the branch of the run, pushed only if its content changed: a week without news does
@@ -130,6 +184,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ steps.pr.outputs.number }}
+          MENTION: ${{ inputs.mention }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           # Only the files of the repository: no `node_modules` or `target` from the updates.
@@ -138,8 +193,12 @@ jobs:
             title="chore: security checks failed"
           else
             # The packages fixed by the updates: vulnerable before, not after.
-            names=$(cut -d' ' -f1,2 "$RUNNER_TEMP/remaining.txt" | grep -vxFf - <(cut -d' ' -f1,2 "$RUNNER_TEMP/vulnerable.txt") |
-              cut -d' ' -f2 | sort -u | paste -sd, | sed 's/,/, /g' || true)
+            names=$({
+              cut -d' ' -f1,2 "$RUNNER_TEMP/remaining.txt" | grep -vxFf - <(cut -d' ' -f1,2 "$RUNNER_TEMP/vulnerable.txt") |
+                cut -d' ' -f2
+              # The name of the image, without tag and digest.
+              awk 'NF == 3 { sub(/@.*/, "", $1); sub(/:[^:\/]*$/, "", $1); print $1 }' "$RUNNER_TEMP/images.txt"
+            } | sort -u | paste -sd, | sed 's/,/, /g' || true)
             title="fix(deps): update ${names:-vulnerable dependencies}"
           fi
           body="Security checks of \`$BASE\` failed: [run]($RUN_URL)."
@@ -154,10 +213,24 @@ jobs:
               echo "| \`$lock\` | \`$name\` | $version | $links | $fixed |"
             done < "$RUNNER_TEMP/vulnerable.txt")
           fi
+          if [ -s "$RUNNER_TEMP/images.txt" ]; then
+            body+=$'\n\n## Vulnerable images\n\n| Image | Advisories | Fixed |\n| --- | --- | --- |\n'
+            body+=$(while read -r image ids new; do
+              links=$(tr ',' '\n' <<< "$ids" | sed 's|.*|[&](https://osv.dev/vulnerability/&)|' | paste -sd' ')
+              fixed="❌ not fixable yet"
+              if [ -n "$new" ]; then
+                fixed="✅ \`$new\`"
+              fi
+              echo "| \`$image\` | $links | $fixed |"
+            done < "$RUNNER_TEMP/images.txt")
+          fi
           if git diff --cached --quiet; then
             body+=$'\n\nNothing to update automatically: the commit is empty, the fixes go on the branch of this PR.'
           else
             body+=$'\n\nThe updates stay within the version ranges of the manifests: a package not fixed needs a new range.'
+          fi
+          if [ -n "$MENTION" ]; then
+            body="$MENTION"$'\n\n'"$body"
           fi
           # A PR body holds at most 65536 characters.
           body=$(head -c 60000 <<< "$body")
@@ -175,6 +248,14 @@ jobs:
           fi
           if [ -n "$PR" ]; then
             gh pr edit "$PR" --title "$title" --body "$body"
+            # The advisories missing from the previous body are new: a comment, since an edited body notifies no one.
+            new_ids=$({ cut -d' ' -f4 "$RUNNER_TEMP/vulnerable.txt"; cut -d' ' -f2 "$RUNNER_TEMP/images.txt"; } |
+              tr ',' '\n' | sort -u | while read -r id; do
+                [ -z "$id" ] || grep -qF -- "$id" "$RUNNER_TEMP/body.md" || echo "$id"
+              done | paste -sd' ')
+            if [ -n "$MENTION" ] && [ -n "$new_ids" ]; then
+              gh pr comment "$PR" --body "$MENTION new advisories: $new_ids"
+            fi
           else
             gh pr create --draft --base "$BASE" --head "$BRANCH" --title "$title" --body "$body"
           fi

@@ -103,6 +103,13 @@ the checks run even after a failed one. Permissions: `contents: read`, `pull-req
 | `javascript` | `true` | `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `bun.lock` (OSV-Scanner) |
 | `java` | `true` | `pom.xml`, `gradle.lockfile` (OSV-Scanner; Gradle needs dependency locking) |
 | `go` | `true` | `go.mod` (OSV-Scanner) |
+| `images` | `true` | The `image` of each service of the Compose files (`compose.yaml`, `compose.yml`, `docker-compose.yaml`, `docker-compose.yml`), only outside PRs: high and critical CVEs with a fix (Trivy) |
+| `base-images` | `false` | The image of each `FROM` of the Dockerfiles (`Dockerfile`, `*.Dockerfile`, `Dockerfile.*`), like `images`. Only scanned: `security-fix.yml` does not update them |
+
+The images are scanned only outside PRs (on the schedule of the caller, or by hand): each one is pulled, and its CVEs
+do not depend on the changes of a PR. An image not pinned (`latest` or no tag) or with a variable in its reference
+gets a warning; the second one is not scanned. A scan that fails without results (network, rate limit of the registry)
+is a warning too, not a failed check. Only public images.
 
 The report, a table of the results with the output of the failed checks, is always in the run summary. On a PR it is
 also a comment: created when a check fails, then updated by the next runs, also when they pass. From a fork the token
@@ -131,7 +138,12 @@ Permissions: `contents: write`, `pull-requests: write`.
 2. The ones of the built-in ecosystems are updated, only them and as far as the version ranges of the manifests allow.
    A failed update does not stop the others.
 3. `update-command` runs, for everything else.
-4. A second scan tells which ones are fixed. The PR lists all of them, with links to their advisories.
+4. Each image of the Compose files with high or critical CVEs (with a fix) moves to the newest tag of its track: same
+   major, same number of version parts, same suffix apart from its numbers (`1.27.3-alpine` → `1.28.0-alpine`,
+   `4.0.1-ls9` → `4.1.0-ls12`). The digest is updated too, if the reference has one. The new tag is used only if none of
+   the advisories of the current one is still there; otherwise the image is listed as not fixable yet.
+5. A second scan tells which packages are fixed. The PR lists all of them and the images, with links to their
+   advisories.
 
 | Lockfile | Update |
 | --- | --- |
@@ -146,6 +158,7 @@ Permissions: `contents: write`, `pull-requests: write`.
 | `branch` | `fix/security` | Branch of the PR |
 | `update-command` | | Command (bash) for the other ecosystems, after the built-in updates. `$VULNERABLE` is a file with a `<lockfile> <name> <version> <advisories>` line per vulnerable package; the files it changes go in the commit |
 | `mise` | `false` | Install the tools of the repository's mise config, for `update-command` |
+| `mention` | | Who to notify (e.g. `@user`): at the top of the PR body, and in a comment when a run finds advisories not in the PR yet |
 
 If nothing changed (a committed secret, a vulnerability without a fix) the commit is empty and the PR reports the
 failure, with the link to the run. The branch is pushed only when its content changes. A PR already marked ready for
@@ -403,6 +416,8 @@ jobs:
 ```
 
 ### Weekly security checks, with the fixes
+
+Every Monday; another cadence is another `cron` (e.g. `"0 3 * * *"`, every night).
 
 ```yaml
 name: Security
