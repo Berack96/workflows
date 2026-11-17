@@ -23,7 +23,7 @@ on:
       mise-version:
         description: Mise version used to run repository tools
         type: string
-        default: "2026.10.9"
+        default: "2026.11.3"
       mention:
         description: Mentioned (e.g. `@user`) when the PR is opened and when new advisories appear
         type: string
