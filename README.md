@@ -158,6 +158,7 @@ Permissions: `contents: write`, `pull-requests: write`.
 | `branch` | `fix/security` | Branch of the PR |
 | `update-command` | | Command (bash) for the other ecosystems, after the built-in updates. `$VULNERABLE` is a file with a `<lockfile> <name> <version> <advisories>` line per vulnerable package; the files it changes go in the commit |
 | `mise` | `false` | Install the tools of the repository's mise config, for `update-command` |
+| `mise-version` | `2026.10.9` | Mise version to install and validate before running updates |
 | `mention` | | Who to notify (e.g. `@user`): at the top of the PR body, and in a comment when a run finds advisories not in the PR yet |
 
 If nothing changed (a committed secret, a vulnerability without a fix) the commit is empty and the PR reports the
@@ -445,6 +446,8 @@ jobs:
       pull-requests: write
     uses: Berack96/workflows/.github/workflows/security-fix.yml@vX.Y.Z
     with:
+      mise: true
+      mise-version: "2026.11.3"
       # Go is not built in.
       update-command: |
         grep '^go.mod ' "$VULNERABLE" | while read -r _ name _; do go get "$name@latest"; done
