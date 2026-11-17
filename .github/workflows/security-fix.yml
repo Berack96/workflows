@@ -20,6 +20,10 @@ on:
         description: Install the tools of the repository's mise config, for `update-command`
         type: boolean
         default: false
+      mise-version:
+        description: Mise version used to run repository tools
+        type: string
+        default: "2026.10.9"
       mention:
         description: Mentioned (e.g. `@user`) when the PR is opened and when new advisories appear
         type: string
@@ -73,8 +77,7 @@ jobs:
       - if: steps.pr.outputs.skip != 'true'
         uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
         with:
-          version: 2026.10.9
-          sha256: 6ab6646b52b83f6bbd51c9d0d3ae54264ffa90efd1ac6d7c0ec5a86bbc6a0030
+          version: ${{ inputs.mise-version }}
           install: ${{ inputs.mise }}
           cache: false
       # The vulnerable packages of all the lockfiles (`.gitignore` is respected), one `lockfile name version ids` per
