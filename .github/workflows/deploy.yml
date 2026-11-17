@@ -49,6 +49,10 @@ on:
         description: Install the tools of the repository's mise config
         type: boolean
         default: false
+      mise-version:
+        description: Mise version used to run repository tools
+        type: string
+        default: "2026.11.3"
 
 permissions: {}
 
@@ -76,12 +80,11 @@ jobs:
         env:
           VARS: ${{ inputs.env }}
         run: printf '%s\n' "$VARS" >> "$GITHUB_ENV"
-      # mise pinned: version and sha256 of the linux-x64 binary (not of the archive).
+      # mise pinned by the caller's version.
       - if: inputs.mise
         uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
         with:
-          version: 2026.10.9
-          sha256: ${{ runner.os == 'Linux' && runner.arch == 'X64' && '6ab6646b52b83f6bbd51c9d0d3ae54264ffa90efd1ac6d7c0ec5a86bbc6a0030' || '' }}
+          version: ${{ inputs.mise-version }}
       # The `.env` lives on the runner, out of git and GitHub: every variable of the example must be in it.
       - id: env-file
         if: inputs.env-file-var

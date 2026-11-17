@@ -71,7 +71,8 @@ Windows included. Permissions: `contents: read`.
 | `runs-on` | `ubuntu-latest` | Runner: a label (`windows-latest`, `self-hosted`) or a JSON list (`["self-hosted", "linux"]`) |
 | `services` | `{}` | Service containers (a database…), as the JSON of [`jobs.<id>.services`](https://docs.github.com/actions/reference/workflows-and-actions/workflow-syntax#jobsjob_idservices) |
 | `env` | | Environment variables of the whole job, `NAME=value`; set before mise, so they can configure it (`MISE_DISABLE_TOOLS`) |
-| `mise` | `false` | Install the tools of the repository's mise config; mise is pinned by version, and by sha256 on linux-x64 |
+| `mise` | `false` | Install the tools of the repository's mise config |
+| `mise-version` | `2026.11.3` | Mise version used to run repository tools |
 | `cache` | | Paths kept between runs (`actions/cache`), one cache per system and architecture |
 | `cache-key` | | Glob of the files whose hash is the key of the cache, e.g. `**/Cargo.lock`; empty for a new cache each run, restored from the latest |
 | `artifact` | | Name of an artifact uploaded after the tests, for the next jobs (kept one day) |
@@ -158,6 +159,7 @@ Permissions: `contents: write`, `pull-requests: write`.
 | `branch` | `fix/security` | Branch of the PR |
 | `update-command` | | Command (bash) for the other ecosystems, after the built-in updates. `$VULNERABLE` is a file with a `<lockfile> <name> <version> <advisories>` line per vulnerable package; the files it changes go in the commit |
 | `mise` | `false` | Install the tools of the repository's mise config, for `update-command` |
+| `mise-version` | `2026.11.3` | Mise version to install and validate before running updates |
 | `mention` | | Who to notify (e.g. `@user`): at the top of the PR body, and in a comment when a run finds advisories not in the PR yet |
 
 If nothing changed (a committed secret, a vulnerability without a fix) the commit is empty and the PR reports the
@@ -337,7 +339,8 @@ without the token and without secrets: a self-hosted runner reads them from its 
 | `wait-timeout` | `300` | Seconds `docker compose up --wait` waits for the services to be running and healthy |
 | `runs-on` | `ubuntu-latest` | Runner: a label (`self-hosted`) or a JSON list (`["self-hosted", "linux"]`) |
 | `env` | | Environment variables of the whole job, `NAME=value`; set before mise, so they can configure it |
-| `mise` | `false` | Install the tools of the repository's mise config; mise is pinned by version, and by sha256 on linux-x64 |
+| `mise` | `false` | Install the tools of the repository's mise config |
+| `mise-version` | `2026.11.3` | Mise version used to run repository tools |
 
 With docker compose, on a self-hosted runner:
 
@@ -445,6 +448,8 @@ jobs:
       pull-requests: write
     uses: Berack96/workflows/.github/workflows/security-fix.yml@vX.Y.Z
     with:
+      mise: true
+      mise-version: "2026.11.3"
       # Go is not built in.
       update-command: |
         grep '^go.mod ' "$VULNERABLE" | while read -r _ name _; do go get "$name@latest"; done
