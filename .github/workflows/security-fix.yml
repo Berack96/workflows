@@ -72,17 +72,35 @@ jobs:
               echo "skip=true" >> "$GITHUB_OUTPUT"
             fi
           fi
-      # mise pinned: version and sha256 of the linux-x64 binary (not of the archive). Without the tools of the
-      # repository unless asked: the built-in updates bring their own.
-      - if: steps.pr.outputs.skip != 'true'
+      # mise pinned to the caller's input. Without the tools of the repository unless asked: the built-in updates bring
+      # their own.
+      - id: mise
+        if: steps.pr.outputs.skip != 'true'
+        continue-on-error: true
         uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
         with:
           version: ${{ inputs.mise-version }}
           install: ${{ inputs.mise }}
           cache: false
+      - id: mise-check
+        if: steps.pr.outputs.skip != 'true'
+        env:
+          MISE_VERSION: ${{ inputs.mise-version }}
+        run: |
+          if [ "${{ steps.mise.outcome }}" != success ]; then
+            echo "::error::mise $MISE_VERSION could not be installed"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! output=$(mise ls 2>&1); then
+            echo "::error::mise $MISE_VERSION is incompatible with the repository: $output"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "::notice::mise $MISE_VERSION is valid for this repository"
       # The vulnerable packages of all the lockfiles (`.gitignore` is respected), one `lockfile name version ids` per
       # line in file $1. Before and after the updates: the ones still there after are not fixed.
-      - if: steps.pr.outputs.skip != 'true'
+      - if: steps.pr.outputs.skip != 'true' && steps.mise-check.outputs.skip != 'true'
         run: |
           cat > "$RUNNER_TEMP/scan.sh" << 'EOF'
           status=0
@@ -99,7 +117,7 @@ jobs:
           bash -eo pipefail "$RUNNER_TEMP/scan.sh" "$RUNNER_TEMP/vulnerable.txt"
       # The tools of the updates, only of the vulnerable lockfiles, installed with the token: without it mise calls the
       # GitHub API anonymously, a limit the shared runners have already used up (403). The updates then find them.
-      - if: steps.pr.outputs.skip != 'true'
+      - if: steps.pr.outputs.skip != 'true' && steps.mise-check.outputs.skip != 'true'
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
@@ -109,7 +127,7 @@ jobs:
             mise install "${tools[@]}" || echo "::warning::could not install ${tools[*]}: their updates will fail"
           fi
       # Only the vulnerable packages, each in its own lockfile, as far as the version ranges of the manifests allow.
-      - if: steps.pr.outputs.skip != 'true'
+      - if: steps.pr.outputs.skip != 'true' && steps.mise-check.outputs.skip != 'true'
         run: |
           while read -r lock name version _; do
             case "$(basename "$lock")" in
@@ -127,7 +145,7 @@ jobs:
             (cd "$(dirname "$lock")" && "${update[@]}") < /dev/null ||
               echo "::warning::$lock: the update of $name failed"
           done < "$RUNNER_TEMP/vulnerable.txt"
-      - if: steps.pr.outputs.skip != 'true' && inputs.update-command != ''
+      - if: steps.pr.outputs.skip != 'true' && steps.mise-check.outputs.skip != 'true' && inputs.update-command != ''
         env:
           RUN: ${{ inputs.update-command }}
           VULNERABLE: ${{ runner.temp }}/vulnerable.txt
@@ -135,7 +153,7 @@ jobs:
       # Each vulnerable image of the Compose files moves to the newest tag of its track (same major, same number of
       # version parts, same suffix but its numbers) if that tag has none of its advisories. One `image advisories new`
       # line per vulnerable image, without `new` if not fixable yet.
-      - if: steps.pr.outputs.skip != 'true'
+      - if: steps.pr.outputs.skip != 'true' && steps.mise-check.outputs.skip != 'true'
         run: |
           scan() {
             docker run --rm --quiet -v "$RUNNER_TEMP/trivy:/root/.cache/trivy" "$TRIVY" image -q --skip-version-check \
@@ -179,11 +197,11 @@ jobs:
             fi
             echo "$image $ids $new" | tee -a "$RUNNER_TEMP/images.txt"
           done < <(grep -v -e '^$' -e '\$' "$RUNNER_TEMP/images.list" | sort -u)
-      - if: steps.pr.outputs.skip != 'true'
+      - if: steps.pr.outputs.skip != 'true' && steps.mise-check.outputs.skip != 'true'
         run: bash -eo pipefail "$RUNNER_TEMP/scan.sh" "$RUNNER_TEMP/remaining.txt"
       # A single commit on top of the branch of the run, pushed only if its content changed: a week without news does
       # not touch the PR.
-      - if: steps.pr.outputs.skip != 'true'
+      - if: steps.pr.outputs.skip != 'true' && steps.mise-check.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ steps.pr.outputs.number }}
