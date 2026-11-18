@@ -404,6 +404,29 @@ jobs:
             done
           }
 
+          # Creates an annotated tag so GitHub orders a promotion by the Action run time, not the commit time.
+          create_tag() {
+            local tag=$1 sha=$2 date object
+            date=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+            object=$(gh api "repos/$GH_REPO/git/tags" \
+              -f tag="$tag" -f message="$tag" -f object="$sha" -f type=commit \
+              -f "tagger[name]=github-actions[bot]" \
+              -f "tagger[email]=41898282+github-actions[bot]@users.noreply.github.com" \
+              -f "tagger[date]=$date" --jq .sha) || return
+            gh api "repos/$GH_REPO/git/refs" -f ref="refs/tags/$tag" -f sha="$object"
+          }
+
+          tag_commit() {
+            local object type
+            object=$(gh api "repos/$GH_REPO/git/ref/tags/$1" --jq .object.sha) || return
+            type=$(gh api "repos/$GH_REPO/git/ref/tags/$1" --jq .object.type) || return
+            if [ "$type" = tag ]; then
+              gh api "repos/$GH_REPO/git/tags/$object" --jq .object.sha
+            else
+              echo "$object"
+            fi
+          }
+
           # A single pre-release of the tags of template $1: on the latest one after the latest release, with the notes
           # since that release; none if there is no such tag. With $2 = true it is created if missing, with the files of
           # `dist` if its commit is $SHA. Holds against other runs in parallel: reads tags and branch from the remote,
@@ -758,8 +781,8 @@ jobs:
           TARGET: ${{ steps.target.outputs.tag }}
         run: |
           source "$RUNNER_TEMP/release.sh"
-          gh api "repos/$GH_REPO/git/refs" -f ref="refs/tags/$TARGET" -f sha="$SHA" ||
-            [ "$(gh api "repos/$GH_REPO/git/ref/tags/$TARGET" --jq .object.sha)" = "$SHA" ]
+          create_tag "$TARGET" "$SHA" ||
+            [ "$(tag_commit "$TARGET")" = "$SHA" ]
           git tag -f "$TARGET" "$SHA"
           if [ "$GITHUB_RELEASE" = release ]; then
             shopt -s nullglob

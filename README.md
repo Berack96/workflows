@@ -182,6 +182,9 @@ environment is the template of its tags, and each call creates the tags of one e
   The tag must be on the branch and after the latest tag of this environment; with `from-workflow`, that workflow must
   have passed on its commit, since anyone with write access can push a tag.
 
+Release tags are annotated with the UTC time of the Action run. This makes GitHub list a promoted release after the
+preview tag it came from, even though both tags point to the same commit.
+
 Without `path` the tags are of the whole repository. Started by hand, only an admin of the repository can run it. The
 branch is the one of the run. Re-running a failed run is safe: tags and releases already created are checked and kept.
 Permissions: `contents: write`, `pull-requests: read`, `actions: read`.
